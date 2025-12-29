@@ -665,6 +665,7 @@ async fn run_instance<P>(
                         .expect("Compositor must be initialized"),
                     exit_on_close_request,
                     system_theme,
+                    graphics_settings.pixel_scale,
                 );
 
                 window.raw.set_theme(conversion::window_theme(
@@ -679,7 +680,7 @@ async fn run_instance<P>(
                     }
                 });
 
-                let logical_size = window.state.logical_size();
+                let logical_size = window.state.scaled_physical_size();
 
                 let _ = user_interfaces.insert(
                     id,
@@ -779,7 +780,8 @@ async fn run_instance<P>(
                         };
 
                         let physical_size = window.state.physical_size();
-                        let mut logical_size = window.state.logical_size();
+                        let mut logical_size =
+                            window.state.scaled_physical_size();
 
                         if physical_size.width == 0 || physical_size.height == 0
                         {
@@ -918,8 +920,11 @@ async fn run_instance<P>(
                                 window = window_manager.get_mut(id).unwrap();
 
                                 // Window scale factor changed during a redraw request
-                                if logical_size != window.state.logical_size() {
-                                    logical_size = window.state.logical_size();
+                                if logical_size
+                                    != window.state.scaled_physical_size()
+                                {
+                                    logical_size =
+                                        window.state.scaled_physical_size();
 
                                     log::debug!(
                                         "Window scale factor changed during a redraw request"
@@ -1110,10 +1115,33 @@ async fn run_instance<P>(
                                 &window_event,
                             );
 
+                            // // Rebuild UI on resize or scale change to use new scaled_logical_size
+                            // if matches!(
+                            //     window_event,
+                            //     winit::event::WindowEvent::Resized(_)
+                            // ) {
+                            //     let size = window.state.scaled_physical_size();
+                            //     if let Some(ui) = user_interfaces.remove(&id) {
+                            //         let cache = ui.into_cache();
+                            //         let new_ui = build_user_interface(
+                            //             &program,
+                            //             cache,
+                            //             &mut window.renderer,
+                            //             Size::new(
+                            //                 size.width as f32,
+                            //                 size.height as f32,
+                            //             ),
+                            //             id,
+                            //         );
+                            //         let _ = user_interfaces.insert(id, new_ui);
+                            //     }
+                            // }
+
                             if let Some(event) = conversion::window_event(
                                 window_event,
                                 window.state.scale_factor(),
                                 window.state.modifiers(),
+                                window.state.pixel_scale(),
                             ) {
                                 events.push((id, event));
                             }
@@ -1788,7 +1816,7 @@ fn run_action<'a, P, C>(
                 };
 
                 let cache = ui.into_cache();
-                let size = window.logical_size();
+                let size = window.scaled_logical_size();
 
                 let _ = interfaces.insert(
                     id,
@@ -1843,7 +1871,7 @@ where
                     program,
                     cache,
                     &mut window.renderer,
-                    window.state.logical_size(),
+                    window.state.scaled_physical_size(),
                     id,
                 ),
             ))

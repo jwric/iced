@@ -40,6 +40,15 @@ pub struct Settings {
     ///
     /// By default, it is enabled.
     pub vsync: bool,
+
+    /// The pixel scale factor for retro pixel effects.
+    ///
+    /// When set to a value greater than 1, the scene will be rendered to a
+    /// downscaled texture and then upscaled with nearest-neighbor filtering,
+    /// creating a pixelated retro look.
+    ///
+    /// By default, it is `1` (no pixel scaling).
+    pub pixel_scale: u32,
 }
 
 impl Default for Settings {
@@ -51,6 +60,7 @@ impl Default for Settings {
             default_text_size: Pixels(16.0),
             antialiasing: true,
             vsync: true,
+            pixel_scale: 1,
         }
     }
 }

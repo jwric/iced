@@ -356,6 +356,7 @@ pub fn main() -> Result<(), winit::error::EventLoopError> {
                 event,
                 window.scale_factor() as f32,
                 *modifiers,
+                1,
             ) {
                 events.push(event);
             }

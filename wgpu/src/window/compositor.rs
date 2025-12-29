@@ -15,6 +15,7 @@ pub struct Compositor {
     alpha_mode: wgpu::CompositeAlphaMode,
     engine: Engine,
     settings: Settings,
+    pixel_scale_state: crate::pixel_scale::PixelScaleState,
 }
 
 /// A compositor error.
@@ -192,6 +193,10 @@ impl Compositor {
                         format,
                         alpha_mode,
                         engine,
+                        pixel_scale_state:
+                            crate::pixel_scale::PixelScaleState::new(
+                                settings.pixel_scale,
+                            ),
                         settings,
                     });
                 }
@@ -221,19 +226,59 @@ pub fn present(
     viewport: &Viewport,
     background_color: Color,
     on_pre_present: impl FnOnce(),
+    pixel_scale_state: &mut crate::pixel_scale::PixelScaleState,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
 ) -> Result<(), compositor::SurfaceError> {
     match surface.get_current_texture() {
         Ok(frame) => {
-            let view = &frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
+            let format = frame.texture.format();
+            let physical_size = viewport.physical_size();
 
-            let _submission = renderer.present(
-                Some(background_color),
-                frame.texture.format(),
-                view,
-                viewport,
-            );
+            // Check if we should use pixel scaling
+            if let Some((intermediate_view, scaled_viewport)) =
+                pixel_scale_state.prepare_render_target(
+                    device,
+                    format,
+                    physical_size.width,
+                    physical_size.height,
+                    viewport.scale_factor() as f64,
+                )
+            {
+                // Render to intermediate texture at lower resolution
+                let _submission = renderer.present(
+                    Some(background_color),
+                    format,
+                    intermediate_view,
+                    &scaled_viewport,
+                );
+
+                // Blit intermediate texture to final surface
+                let view = &frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                pixel_scale_state.blit_to_surface(
+                    device,
+                    queue,
+                    format,
+                    view,
+                    physical_size.width,
+                    physical_size.height,
+                );
+            } else {
+                // Normal rendering path (no pixel scaling)
+                let view = &frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+
+                let _submission = renderer.present(
+                    Some(background_color),
+                    format,
+                    view,
+                    viewport,
+                );
+            }
 
             // Present the frame
             on_pre_present();
@@ -361,6 +406,9 @@ impl graphics::Compositor for Compositor {
             viewport,
             background_color,
             on_pre_present,
+            &mut self.pixel_scale_state,
+            &self.engine.device,
+            &self.engine.queue,
         )
     }
 

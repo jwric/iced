@@ -56,8 +56,9 @@ where
         compositor: &mut C,
         exit_on_close_request: bool,
         system_theme: theme::Mode,
+        pixel_scale: u32,
     ) -> &mut Window<P, C> {
-        let state = State::new(program, id, &window, system_theme);
+        let state = State::new(program, id, &window, system_theme, pixel_scale);
         let surface_size = state.physical_size();
         let surface_version = state.surface_version();
         let surface = compositor.create_surface(
@@ -194,6 +195,10 @@ where
 
     pub fn logical_size(&self) -> Size {
         self.state.logical_size()
+    }
+
+    pub fn scaled_logical_size(&self) -> Size {
+        self.state.scaled_physical_size()
     }
 
     pub fn request_redraw(&mut self, redraw_request: RedrawRequest) {

@@ -191,6 +191,8 @@ fn draw(
     transformation: Transformation,
 ) {
     let position = position * transformation;
+    // Round position to whole pixels to prevent blurry text
+    let position = Point::new(position.x.round(), position.y.round());
 
     let mut swash = cosmic_text::SwashCache::new();
 

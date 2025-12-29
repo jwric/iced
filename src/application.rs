@@ -230,6 +230,22 @@ impl<P: Program> Application<P> {
         }
     }
 
+    /// Sets the [`Settings::pixel_scale`] of the [`Application`].
+    ///
+    /// Pixel scaling creates a retro pixelated effect by rendering at a lower
+    /// resolution and upscaling with nearest-neighbor filtering.
+    ///
+    /// Values of 2-4 provide a good balance between retro aesthetic and readability.
+    pub fn pixel_scale(self, pixel_scale: u32) -> Self {
+        Self {
+            settings: Settings {
+                pixel_scale,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
     /// Sets the default [`Font`] of the [`Application`].
     pub fn default_font(self, default_font: Font) -> Self {
         Self {

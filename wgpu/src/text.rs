@@ -618,10 +618,15 @@ fn prepare(
                 &(clip_bounds * transformation * layer_transformation),
             )?;
 
+            // Round text position to whole pixels to prevent blurry text.
+            // When text is positioned at fractional coordinates (e.g., x=100.5),
+            // the GPU interpolates between pixels during sampling, causing blur.
+            // This is especially noticeable during window resizing when scale
+            // factors produce fractional positions after transformations.
             Some(cryoglyph::TextArea {
                 buffer,
-                left: position.x,
-                top: position.y,
+                left: position.x.round(),
+                top: position.y.round(),
                 scale: transformation.scale_factor()
                     * layer_transformation.scale_factor(),
                 bounds: cryoglyph::TextBounds {

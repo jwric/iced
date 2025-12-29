@@ -33,6 +33,7 @@ pub mod geometry;
 mod buffer;
 mod color;
 mod engine;
+mod pixel_scale;
 mod quad;
 mod text;
 mod triangle;

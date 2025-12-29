@@ -229,6 +229,50 @@ where
         self
     }
 
+    /// Sets the width of the scrollbar of the [`Scrollable`].
+    ///
+    /// By default, it is `10` pixels.
+    pub fn scrollbar_width(mut self, width: impl Into<Pixels>) -> Self {
+        let width = width.into().0;
+        match &mut self.direction {
+            Direction::Horizontal(scrollbar)
+            | Direction::Vertical(scrollbar) => {
+                scrollbar.width = width;
+            }
+            Direction::Both {
+                vertical,
+                horizontal,
+            } => {
+                vertical.width = width;
+                horizontal.width = width;
+            }
+        }
+
+        self
+    }
+
+    /// Sets the scroller width of the [`Scrollable`].
+    ///
+    /// By default, it is `10` pixels.
+    pub fn scroller_width(mut self, scroller_width: impl Into<Pixels>) -> Self {
+        let scroller_width = scroller_width.into().0;
+        match &mut self.direction {
+            Direction::Horizontal(scrollbar)
+            | Direction::Vertical(scrollbar) => {
+                scrollbar.scroller_width = scroller_width;
+            }
+            Direction::Both {
+                vertical,
+                horizontal,
+            } => {
+                vertical.scroller_width = scroller_width;
+                horizontal.scroller_width = scroller_width;
+            }
+        }
+
+        self
+    }
+
     /// Sets whether the user should be allowed to auto-scroll the [`Scrollable`]
     /// with the middle mouse button.
     ///
