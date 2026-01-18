@@ -196,6 +196,7 @@ impl Compositor {
                         pixel_scale_state:
                             crate::pixel_scale::PixelScaleState::new(
                                 settings.pixel_scale,
+                                settings.crt_effects,
                             ),
                         settings,
                     });

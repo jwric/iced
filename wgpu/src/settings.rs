@@ -1,5 +1,5 @@
 //! Configure a renderer.
-use crate::core::{Font, Pixels};
+use crate::core::{self, Font, Pixels};
 use crate::graphics::{self, Antialiasing};
 
 /// The settings of a [`Renderer`].
@@ -36,6 +36,16 @@ pub struct Settings {
     ///
     /// By default, it is `1` (no pixel scaling).
     pub pixel_scale: u32,
+
+    /// CRT post-processing effect settings.
+    ///
+    /// These effects are applied when pixel scaling is enabled.
+    /// Configure properties like scanlines, screen curvature, and color separation
+    /// for an authentic retro CRT monitor look.
+    ///
+    /// Set to `Some(settings)` to enable, `None` to disable.
+    /// By default, CRT effects are disabled (`None`).
+    pub crt_effects: Option<core::CrtEffectSettings>,
 }
 
 impl Default for Settings {
@@ -47,6 +57,7 @@ impl Default for Settings {
             default_text_size: Pixels(16.0),
             antialiasing: None,
             pixel_scale: 1,
+            crt_effects: None,
         }
     }
 }
@@ -63,6 +74,7 @@ impl From<graphics::Settings> for Settings {
             default_text_size: settings.default_text_size,
             antialiasing: settings.antialiasing,
             pixel_scale: settings.pixel_scale,
+            crt_effects: settings.crt_effects,
             ..Settings::default()
         }
     }
@@ -80,6 +92,23 @@ impl From<graphics::Settings> for Settings {
 /// - `fifo` → [`wgpu::PresentMode::Fifo`]
 /// - `fifo_relaxed` → [`wgpu::PresentMode::FifoRelaxed`]
 /// - `mailbox` → [`wgpu::PresentMode::Mailbox`]
+impl Settings {
+    /// Sets the CRT effect settings.
+    ///
+    /// Enables and configures retro CRT monitor effects like scanlines,
+    /// screen curvature, and color separation.
+    pub fn crt_effects(mut self, crt_effects: core::CrtEffectSettings) -> Self {
+        self.crt_effects = Some(crt_effects);
+        self
+    }
+
+    /// Enables CRT effects with default settings.
+    pub fn with_crt_effects(mut self) -> Self {
+        self.crt_effects = Some(core::CrtEffectSettings::default());
+        self
+    }
+}
+
 pub fn present_mode_from_env() -> Option<wgpu::PresentMode> {
     let present_mode = std::env::var("ICED_PRESENT_MODE").ok()?;
 

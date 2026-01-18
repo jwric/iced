@@ -72,7 +72,7 @@ pub use point::Point;
 pub use rectangle::Rectangle;
 pub use renderer::Renderer;
 pub use rotation::Rotation;
-pub use settings::Settings;
+pub use settings::{CrtEffectSettings, Settings};
 pub use shadow::Shadow;
 pub use shell::Shell;
 pub use size::Size;

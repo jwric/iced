@@ -36,8 +36,8 @@ use crate::shell;
 use crate::theme;
 use crate::window;
 use crate::{
-    Element, Executor, Font, Never, Preset, Result, Settings, Size,
-    Subscription, Task, Theme,
+    CrtEffectSettings, Element, Executor, Font, Never, Preset, Result,
+    Settings, Size, Subscription, Task, Theme,
 };
 
 use iced_debug as debug;
@@ -240,6 +240,34 @@ impl<P: Program> Application<P> {
         Self {
             settings: Settings {
                 pixel_scale,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Sets the CRT effect settings of the [`Application`].
+    ///
+    /// CRT effects provide retro monitor aesthetics including scanlines, screen curvature,
+    /// and color separation. These effects are applied when pixel scaling is enabled.
+    pub fn crt_effects(self, crt_effects: CrtEffectSettings) -> Self {
+        Self {
+            settings: Settings {
+                crt_effects: Some(crt_effects),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Enables CRT effects with default settings.
+    ///
+    /// This is a convenience method that enables CRT effects without needing to
+    /// construct a [`CrtEffectSettings`] manually.
+    pub fn with_crt_effects(self) -> Self {
+        Self {
+            settings: Settings {
+                crt_effects: Some(CrtEffectSettings::default()),
                 ..self.settings
             },
             ..self

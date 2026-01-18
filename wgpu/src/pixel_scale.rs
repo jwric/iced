@@ -7,6 +7,36 @@
 use crate::graphics::Viewport;
 use wgpu::util::DeviceExt;
 
+// Re-export CrtEffectSettings from core for convenience
+pub use crate::core::CrtEffectSettings;
+
+/// Uniform buffer data for CRT effects shader.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct CrtUniforms {
+    scanline_intensity: f32,
+    screen_curvature: f32,
+    rgb_separation: f32,
+    vignette_strength: f32,
+    brightness: f32,
+    contrast: f32,
+    _padding: [f32; 2], // Align to 16 bytes
+}
+
+impl From<crate::core::CrtEffectSettings> for CrtUniforms {
+    fn from(settings: crate::core::CrtEffectSettings) -> Self {
+        Self {
+            scanline_intensity: settings.scanline_intensity,
+            screen_curvature: settings.screen_curvature,
+            rgb_separation: settings.rgb_separation,
+            vignette_strength: settings.vignette_strength,
+            brightness: settings.brightness,
+            contrast: settings.contrast,
+            _padding: [0.0; 2],
+        }
+    }
+}
+
 /// Manages pixel scaling state for a compositor.
 pub struct PixelScaleState {
     /// The pixel scale factor (1 = no scaling).
@@ -15,6 +45,8 @@ pub struct PixelScaleState {
     intermediate_texture: Option<IntermediateTexture>,
     /// The blit pipeline for upscaling.
     blit_pipeline: Option<BlitPipeline>,
+    /// CRT effect settings. None means disabled.
+    pub crt_settings: Option<crate::core::CrtEffectSettings>,
 }
 
 struct IntermediateTexture {
@@ -27,19 +59,25 @@ struct IntermediateTexture {
 
 struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    uniform_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
 }
 
 impl PixelScaleState {
     /// Creates a new pixel scale state.
-    pub fn new(pixel_scale: u32) -> Self {
+    pub fn new(
+        pixel_scale: u32,
+        crt_settings: Option<crate::core::CrtEffectSettings>,
+    ) -> Self {
         Self {
             pixel_scale: pixel_scale.max(1),
             intermediate_texture: None,
             blit_pipeline: None,
+            crt_settings,
         }
     }
 
@@ -51,6 +89,19 @@ impl PixelScaleState {
     /// Gets the pixel scale factor.
     pub fn pixel_scale(&self) -> u32 {
         self.pixel_scale
+    }
+
+    /// Updates the CRT effect settings.
+    pub fn update_crt_settings(
+        &mut self,
+        settings: Option<crate::core::CrtEffectSettings>,
+    ) {
+        self.crt_settings = settings;
+    }
+
+    /// Gets the current CRT effect settings.
+    pub fn crt_settings(&self) -> Option<crate::core::CrtEffectSettings> {
+        self.crt_settings
     }
 
     /// Presents with pixel scaling if enabled.
@@ -78,9 +129,9 @@ impl PixelScaleState {
 
         // Snap logical size to be divisible by pixel_scale to prevent gaps
         // This ensures intermediate texture upscales perfectly to fill the logical size
-        let snapped_logical_width =
+        let _snapped_logical_width =
             (logical_width / self.pixel_scale) * self.pixel_scale;
-        let snapped_logical_height =
+        let _snapped_logical_height =
             (logical_height / self.pixel_scale) * self.pixel_scale;
 
         // Calculate intermediate texture size from snapped logical size
@@ -127,6 +178,27 @@ impl PixelScaleState {
             .blit_pipeline
             .as_ref()
             .expect("Blit pipeline should exist");
+
+        // Update CRT uniforms
+        let uniforms: CrtUniforms = if let Some(settings) = self.crt_settings {
+            settings.into()
+        } else {
+            // When disabled (None), set all effects to neutral/zero values
+            crate::core::CrtEffectSettings {
+                scanline_intensity: 0.0,
+                screen_curvature: 0.0,
+                rgb_separation: 0.0,
+                vignette_strength: 0.0,
+                brightness: 1.0,
+                contrast: 1.0,
+            }
+            .into()
+        };
+        queue.write_buffer(
+            &blit_pipeline.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[uniforms]),
+        );
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -187,7 +259,13 @@ impl PixelScaleState {
                 1.0,
             );
 
-            blit_pipeline.render(device, &intermediate.view, &mut render_pass);
+            blit_pipeline.render(
+                device,
+                &intermediate.view,
+                target_width,
+                target_height,
+                &mut render_pass,
+            );
         }
 
         let _submission = queue.submit([encoder.finish()]);
@@ -250,9 +328,10 @@ impl PixelScaleState {
 
 impl BlitPipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let bind_group_layout =
+        // Bind group 0: Texture and sampler
+        let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("iced_wgpu::pixel_scale bind group layout"),
+                label: Some("iced_wgpu::pixel_scale texture bind group layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -277,10 +356,29 @@ impl BlitPipeline {
                 ],
             });
 
+        // Bind group 1: CRT uniforms
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("iced_wgpu::pixel_scale uniform bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("iced_wgpu::pixel_scale pipeline layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &uniform_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -355,12 +453,30 @@ impl BlitPipeline {
                 usage: wgpu::BufferUsages::INDEX,
             });
 
+        let uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("iced_wgpu::pixel_scale uniform buffer"),
+                contents: bytemuck::cast_slice(&[CrtUniforms {
+                    scanline_intensity: 0.0,
+                    screen_curvature: 0.0,
+                    rgb_separation: 0.0,
+                    vignette_strength: 0.0,
+                    brightness: 1.0,
+                    contrast: 1.0,
+                    _padding: [0.0; 2],
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM
+                    | wgpu::BufferUsages::COPY_DST,
+            });
+
         Self {
             pipeline,
-            bind_group_layout,
+            texture_bind_group_layout,
+            uniform_bind_group_layout,
             sampler,
             vertex_buffer,
             index_buffer,
+            uniform_buffer,
         }
     }
 
@@ -368,25 +484,41 @@ impl BlitPipeline {
         &self,
         device: &wgpu::Device,
         texture_view: &wgpu::TextureView,
+        _target_width: u32,
+        _target_height: u32,
         render_pass: &mut wgpu::RenderPass<'_>,
     ) {
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("iced_wgpu::pixel_scale bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
+        let texture_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("iced_wgpu::pixel_scale texture bind group"),
+                layout: &self.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            texture_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+
+        let uniform_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("iced_wgpu::pixel_scale uniform bind group"),
+                layout: &self.uniform_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
+                    resource: self.uniform_buffer.as_entire_binding(),
+                }],
+            });
 
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.set_bind_group(0, &texture_bind_group, &[]);
+        render_pass.set_bind_group(1, &uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.slice(..),
@@ -435,6 +567,15 @@ struct VertexOutput {
     @location(0) tex_coords: vec2<f32>,
 }
 
+struct CrtUniforms {
+    scanline_intensity: f32,
+    screen_curvature: f32,
+    rgb_separation: f32,
+    vignette_strength: f32,
+    brightness: f32,
+    contrast: f32,
+}
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -448,10 +589,85 @@ var t_texture: texture_2d<f32>;
 @group(0) @binding(1)
 var t_sampler: sampler;
 
+@group(1) @binding(0)
+var<uniform> crt: CrtUniforms;
+
+// Apply barrel distortion for CRT screen curvature
+fn apply_curvature(uv: vec2<f32>, amount: f32) -> vec2<f32> {
+    if (amount == 0.0) {
+        return uv;
+    }
+
+    let centered = uv * 2.0 - 1.0;
+    let dist = length(centered);
+    let distortion = 1.0 + amount * dist * dist;
+    let curved = centered * distortion;
+    return curved * 0.5 + 0.5;
+}
+
+// Vignette effect (darkening at screen edges)
+fn apply_vignette(uv: vec2<f32>, strength: f32) -> f32 {
+    if (strength == 0.0) {
+        return 1.0;
+    }
+
+    let centered = uv * 2.0 - 1.0;
+    let dist = length(centered);
+    return 1.0 - smoothstep(0.5, 1.5, dist) * strength;
+}
+
+// Scanline effect
+fn apply_scanlines(uv: vec2<f32>, intensity: f32) -> f32 {
+    if (intensity == 0.0) {
+        return 1.0;
+    }
+
+    let dims = vec2<f32>(textureDimensions(t_texture));
+    let scaled_y = uv.y * dims.y;
+    let scanline = sin(scaled_y * 3.14159265359);
+    return 1.0 - (scanline * 0.5 + 0.5) * intensity;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Use textureSample with nearest-neighbor filtering for pixel-perfect upscaling
-    // The sampler is configured with FilterMode::Nearest to prevent blurriness
-    return textureSample(t_texture, t_sampler, input.tex_coords);
+    var uv = input.tex_coords;
+
+    // Apply screen curvature
+    uv = apply_curvature(uv, crt.screen_curvature);
+
+    // Check if we're outside the screen after curvature
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+
+    // Sample with RGB separation (chromatic aberration)
+    // rgb_separation is specified in pixels at the source texture resolution
+    // Convert to UV space for resolution-independent effect
+    var color: vec3<f32>;
+    if (crt.rgb_separation > 0.0) {
+        let dims = vec2<f32>(textureDimensions(t_texture));
+        let uv_offset = crt.rgb_separation / dims.x;
+        let r = textureSample(t_texture, t_sampler, uv + vec2<f32>(-uv_offset, 0.0)).r;
+        let g = textureSample(t_texture, t_sampler, uv).g;
+        let b = textureSample(t_texture, t_sampler, uv + vec2<f32>(uv_offset, 0.0)).b;
+        color = vec3<f32>(r, g, b);
+    } else {
+        color = textureSample(t_texture, t_sampler, uv).rgb;
+    }
+
+    // Apply scanlines
+    color *= apply_scanlines(uv, crt.scanline_intensity);
+
+    // Apply vignette
+    color *= apply_vignette(uv, crt.vignette_strength);
+
+    // Apply brightness and contrast
+    color = (color - 0.5) * crt.contrast + 0.5;
+    color *= crt.brightness;
+
+    // Clamp to valid range
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    return vec4<f32>(color, 1.0);
 }
 "#;

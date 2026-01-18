@@ -30,6 +30,16 @@ pub struct Settings {
     ///
     /// By default, it is `1` (no pixel scaling).
     pub pixel_scale: u32,
+
+    /// CRT post-processing effect settings.
+    ///
+    /// These effects are applied when pixel scaling is enabled.
+    /// Configure properties like scanlines, screen curvature, and color separation
+    /// for an authentic retro CRT monitor look.
+    ///
+    /// Set to `Some(settings)` to enable, `None` to disable.
+    /// By default, CRT effects are disabled (`None`).
+    pub crt_effects: Option<core::CrtEffectSettings>,
 }
 
 impl Default for Settings {
@@ -40,6 +50,7 @@ impl Default for Settings {
             antialiasing: None,
             vsync: true,
             pixel_scale: 1,
+            crt_effects: None,
         }
     }
 }
@@ -60,6 +71,7 @@ impl From<core::Settings> for Settings {
             antialiasing: settings.antialiasing.then_some(Antialiasing::MSAAx4),
             vsync: settings.vsync,
             pixel_scale: settings.pixel_scale,
+            crt_effects: settings.crt_effects,
         }
     }
 }
