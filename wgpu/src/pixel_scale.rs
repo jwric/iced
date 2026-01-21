@@ -39,8 +39,8 @@ impl From<crate::core::CrtEffectSettings> for CrtUniforms {
 
 /// Manages pixel scaling state for a compositor.
 pub struct PixelScaleState {
-    /// The pixel scale factor (1 = no scaling).
-    pixel_scale: u32,
+    /// The pixel scale mode.
+    pixel_scale_mode: crate::core::PixelScaleMode,
     /// The intermediate texture for downscaled rendering.
     intermediate_texture: Option<IntermediateTexture>,
     /// The blit pipeline for upscaling.
@@ -70,25 +70,25 @@ struct BlitPipeline {
 impl PixelScaleState {
     /// Creates a new pixel scale state.
     pub fn new(
-        pixel_scale: u32,
+        pixel_scale_mode: crate::core::PixelScaleMode,
         crt_settings: Option<crate::core::CrtEffectSettings>,
     ) -> Self {
         Self {
-            pixel_scale: pixel_scale.max(1),
+            pixel_scale_mode,
             intermediate_texture: None,
             blit_pipeline: None,
             crt_settings,
         }
     }
 
-    /// Returns whether pixel scaling is enabled.
-    pub fn is_enabled(&self) -> bool {
-        self.pixel_scale > 1
+    /// Returns whether pixel scaling is enabled for the given scale factor.
+    pub fn is_enabled(&self, scale_factor: f64) -> bool {
+        self.pixel_scale_mode.calculate_pixel_scale(scale_factor) > 1
     }
 
-    /// Gets the pixel scale factor.
-    pub fn pixel_scale(&self) -> u32 {
-        self.pixel_scale
+    /// Gets the pixel scale factor for the given scale factor.
+    pub fn pixel_scale(&self, scale_factor: f64) -> u32 {
+        self.pixel_scale_mode.calculate_pixel_scale(scale_factor)
     }
 
     /// Updates the CRT effect settings.
@@ -117,7 +117,10 @@ impl PixelScaleState {
         height: u32,
         scale_factor: f64,
     ) -> Option<(&wgpu::TextureView, Viewport)> {
-        if !self.is_enabled() {
+        let pixel_scale =
+            self.pixel_scale_mode.calculate_pixel_scale(scale_factor);
+
+        if pixel_scale <= 1 {
             return None;
         }
 
@@ -130,13 +133,13 @@ impl PixelScaleState {
         // Snap logical size to be divisible by pixel_scale to prevent gaps
         // This ensures intermediate texture upscales perfectly to fill the logical size
         let _snapped_logical_width =
-            (logical_width / self.pixel_scale) * self.pixel_scale;
+            (logical_width / pixel_scale) * pixel_scale;
         let _snapped_logical_height =
-            (logical_height / self.pixel_scale) * self.pixel_scale;
+            (logical_height / pixel_scale) * pixel_scale;
 
         // Calculate intermediate texture size from snapped logical size
-        let intermediate_width = (width / self.pixel_scale).max(1);
-        let intermediate_height = (height / self.pixel_scale).max(1);
+        let intermediate_width = (width / pixel_scale).max(1);
+        let intermediate_height = (height / pixel_scale).max(1);
 
         self.ensure_intermediate_texture(
             device,

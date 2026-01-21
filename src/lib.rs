@@ -534,8 +534,8 @@ pub use crate::core::theme;
 pub use crate::core::{
     Alignment, Animation, Background, Border, Color, ContentFit,
     CrtEffectSettings, Degrees, Function, Gradient, Length, Never, Padding,
-    Pixels, Point, Radians, Rectangle, Rotation, Settings, Shadow, Size, Theme,
-    Transformation, Vector, never,
+    PixelScaleMode, Pixels, Point, Radians, Rectangle, Rotation, Settings,
+    Shadow, Size, Theme, Transformation, Vector, never,
 };
 pub use crate::program::Preset;
 pub use crate::program::message;

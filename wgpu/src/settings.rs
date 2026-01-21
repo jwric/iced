@@ -1,5 +1,5 @@
 //! Configure a renderer.
-use crate::core::{self, Font, Pixels};
+use crate::core::{self, Font, PixelScaleMode, Pixels};
 use crate::graphics::{self, Antialiasing};
 
 /// The settings of a [`Renderer`].
@@ -28,14 +28,19 @@ pub struct Settings {
     /// By default, it is `None`.
     pub antialiasing: Option<Antialiasing>,
 
-    /// The pixel scale factor for retro pixel effects.
+    /// The pixel scale mode for retro pixel effects.
     ///
-    /// When set to a value greater than 1, the scene will be rendered to a
+    /// This determines how pixel scaling is applied:
+    /// - `Auto(n)`: Automatically adjusts pixel scale based on monitor DPI to maintain
+    ///   a target visual size. The value `n` is the target size in logical pixels.
+    /// - `Fixed(n)`: Uses a fixed pixel scale factor regardless of monitor DPI.
+    ///
+    /// When pixel scale is greater than 1, the scene will be rendered to a
     /// downscaled texture and then upscaled with nearest-neighbor filtering,
     /// creating a pixelated retro look.
     ///
-    /// By default, it is `1` (no pixel scaling).
-    pub pixel_scale: u32,
+    /// By default, it is `Fixed(1)` (no pixel scaling).
+    pub pixel_scale: PixelScaleMode,
 
     /// CRT post-processing effect settings.
     ///
@@ -56,7 +61,7 @@ impl Default for Settings {
             default_font: Font::default(),
             default_text_size: Pixels(16.0),
             antialiasing: None,
-            pixel_scale: 1,
+            pixel_scale: PixelScaleMode::default(),
             crt_effects: None,
         }
     }

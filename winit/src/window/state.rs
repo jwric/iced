@@ -1,5 +1,5 @@
 use crate::conversion;
-use crate::core::{Color, Size};
+use crate::core::{Color, PixelScaleMode, Size};
 use crate::core::{mouse, theme, window};
 use crate::graphics::Viewport;
 use crate::program::{self, Program};
@@ -24,7 +24,7 @@ where
     theme_mode: theme::Mode,
     default_theme: P::Theme,
     style: theme::Style,
-    pixel_scale: u32,
+    pixel_scale_mode: PixelScaleMode,
 }
 
 impl<P: Program> Debug for State<P>
@@ -52,7 +52,7 @@ where
         window_id: window::Id,
         window: &Window,
         system_theme: theme::Mode,
-        pixel_scale: u32,
+        pixel_scale_mode: PixelScaleMode,
     ) -> Self {
         let title = program.title(window_id);
         let scale_factor = program.scale_factor(window_id);
@@ -82,7 +82,7 @@ where
             theme_mode,
             default_theme,
             style,
-            pixel_scale: pixel_scale.max(1),
+            pixel_scale_mode,
         }
     }
 
@@ -106,7 +106,10 @@ where
     /// This is the size that should be used for UI layout when pixel scaling is enabled.
     pub fn scaled_physical_size(&self) -> Size<f32> {
         let logical = self.viewport.physical_size();
-        let scale = self.pixel_scale as u32;
+        let pixel_scale = self
+            .pixel_scale_mode
+            .calculate_pixel_scale(self.viewport.scale_factor() as f64);
+        let scale = pixel_scale as u32;
 
         Size::new(
             (logical.width / scale) as f32,
@@ -118,8 +121,15 @@ where
         self.viewport.scale_factor()
     }
 
+    /// Gets the calculated pixel scale based on the current DPI.
     pub fn pixel_scale(&self) -> u32 {
-        self.pixel_scale
+        self.pixel_scale_mode
+            .calculate_pixel_scale(self.viewport.scale_factor() as f64)
+    }
+
+    /// Gets the pixel scale mode.
+    pub fn pixel_scale_mode(&self) -> PixelScaleMode {
+        self.pixel_scale_mode
     }
 
     pub fn cursor(&self) -> mouse::Cursor {
@@ -130,9 +140,10 @@ where
 
                 // Adjust for pixel scaling - the cursor is in window space
                 // but rendering happens at 1/pixel_scale resolution
-                if self.pixel_scale > 1 {
-                    point.x /= self.pixel_scale as f32;
-                    point.y /= self.pixel_scale as f32;
+                let pixel_scale = self.pixel_scale();
+                if pixel_scale > 1 {
+                    point.x /= pixel_scale as f32;
+                    point.y /= pixel_scale as f32;
                 }
 
                 point
@@ -169,7 +180,7 @@ where
     ) {
         match event {
             WindowEvent::Resized(new_size) => {
-                let k = self.pixel_scale;
+                let k = self.pixel_scale();
 
                 // Use the actual physical size from winit
                 let size = Size::new(new_size.width, new_size.height);
@@ -207,7 +218,7 @@ where
                 let new_inner_size = window.inner_size();
                 let mut size =
                     Size::new(new_inner_size.width, new_inner_size.height);
-                let k = self.pixel_scale;
+                let k = self.pixel_scale();
 
                 if k > 1
                     && !window.is_maximized()

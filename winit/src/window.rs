@@ -56,9 +56,10 @@ where
         compositor: &mut C,
         exit_on_close_request: bool,
         system_theme: theme::Mode,
-        pixel_scale: u32,
+        pixel_scale_mode: crate::core::PixelScaleMode,
     ) -> &mut Window<P, C> {
-        let state = State::new(program, id, &window, system_theme, pixel_scale);
+        let state =
+            State::new(program, id, &window, system_theme, pixel_scale_mode);
         let surface_size = state.physical_size();
         let surface_version = state.surface_version();
         let surface = compositor.create_surface(

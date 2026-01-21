@@ -36,8 +36,8 @@ use crate::shell;
 use crate::theme;
 use crate::window;
 use crate::{
-    CrtEffectSettings, Element, Executor, Font, Never, Preset, Result,
-    Settings, Size, Subscription, Task, Theme,
+    CrtEffectSettings, Element, Executor, Font, Never, PixelScaleMode, Preset,
+    Result, Settings, Size, Subscription, Task, Theme,
 };
 
 use iced_debug as debug;
@@ -230,7 +230,7 @@ impl<P: Program> Application<P> {
         }
     }
 
-    /// Sets the [`Settings::pixel_scale`] of the [`Application`].
+    /// Sets the [`Settings::pixel_scale`] to a fixed value.
     ///
     /// Pixel scaling creates a retro pixelated effect by rendering at a lower
     /// resolution and upscaling with nearest-neighbor filtering.
@@ -239,7 +239,41 @@ impl<P: Program> Application<P> {
     pub fn pixel_scale(self, pixel_scale: u32) -> Self {
         Self {
             settings: Settings {
-                pixel_scale,
+                pixel_scale: PixelScaleMode::Fixed(pixel_scale),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Sets the [`Settings::pixel_scale`] to automatically adjust based on monitor DPI.
+    ///
+    /// The `target_size` parameter specifies how many logical pixels (at 96 DPI)
+    /// each virtual pixel should appear as. For example:
+    /// - `pixel_scale_auto(2)` makes each virtual pixel appear as ~2 logical pixels
+    /// - `pixel_scale_auto(3)` makes each virtual pixel appear as ~3 logical pixels
+    ///
+    /// The actual pixel scale will be calculated as an integer value based on the
+    /// monitor's DPI, maintaining pixel-perfect rendering while achieving the desired
+    /// visual size across different displays.
+    pub fn pixel_scale_auto(self, target_size: u32) -> Self {
+        Self {
+            settings: Settings {
+                pixel_scale: PixelScaleMode::Auto(target_size),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Sets the [`Settings::pixel_scale`] mode directly.
+    ///
+    /// This allows full control over the pixel scale mode, choosing between
+    /// `PixelScaleMode::Auto(n)` or `PixelScaleMode::Fixed(n)`.
+    pub fn pixel_scale_mode(self, pixel_scale_mode: PixelScaleMode) -> Self {
+        Self {
+            settings: Settings {
+                pixel_scale: pixel_scale_mode,
                 ..self.settings
             },
             ..self
