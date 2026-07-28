@@ -2263,6 +2263,12 @@ impl State {
     /// since the last one, recording it so that it is not reported again.
     fn notify_viewport(&mut self, bounds: Rectangle, content: Size) -> Option<Scroll> {
         if content.width <= bounds.width && content.height <= bounds.height {
+            // Content that fits produces no notification, so the last notified
+            // viewport no longer describes this content. Keeping it would let a
+            // later layout that coincides with the stale record suppress its
+            // first notification forever.
+            self.last_notified = None;
+
             return None;
         }
 
