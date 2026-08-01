@@ -1350,6 +1350,7 @@ dependencies = [
 [[package]]
 name = "dpi"
 version = "0.1.1"
+source = "git+https://github.com/jwric/winit?branch=0.30-web-ime#2e51d0600f0ff20aabaa1159caaca2d10e95455b"
 
 [[package]]
 name = "editor"
@@ -7475,6 +7476,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
+source = "git+https://github.com/jwric/winit?branch=0.30-web-ime#2e51d0600f0ff20aabaa1159caaca2d10e95455b"
 dependencies = [
  "ahash",
  "android-activity",
