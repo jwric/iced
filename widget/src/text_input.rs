@@ -414,7 +414,7 @@ where
         state: &'b State<Renderer::Paragraph>,
         layout: Layout<'_>,
         value: &Value,
-    ) -> InputMethod<&'b str> {
+    ) -> InputMethod {
         let Some(Focus {
             is_window_focused: true,
             ..
@@ -457,7 +457,11 @@ where
                 self.ime_purpose
             },
             action: self.ime_action,
-            preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+            text: self.value.to_string(),
+            selection: cursor_char_selection(&self.value, state.cursor),
+            autocapitalize: !self.is_secure,
+            multiline: false,
+            preedit: state.preedit.clone(),
         }
     }
 
@@ -1342,6 +1346,30 @@ where
                         update_cache(state, &self.value);
                     }
                 }
+                input_method::Event::DeleteSurrounding { before, after } => {
+                    let state = state::<Renderer>(tree);
+
+                    if let Some(focus) = &mut state.is_focused {
+                        let Some(on_input) = &self.on_input else {
+                            return;
+                        };
+
+                        delete_surrounding(
+                            &mut self.value,
+                            &mut state.cursor,
+                            *before,
+                            *after,
+                        );
+
+                        focus.updated_at = Instant::now();
+                        state.is_pasting = None;
+
+                        shell.publish((on_input)(self.value.to_string()));
+                        shell.capture_event();
+
+                        update_cache(state, &self.value);
+                    }
+                }
             },
             Event::Window(window::Event::Unfocused) => {
                 let state = state::<Renderer>(tree);
@@ -1391,6 +1419,16 @@ where
                 }
             }
             _ => {}
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if !matches!(event, Event::InputMethod(_)) {
+            let state = state::<Renderer>(tree);
+            shell.request_input_method(&self.input_method(
+                state,
+                layout,
+                &self.value,
+            ));
         }
 
         let state = state::<Renderer>(tree);
@@ -1535,6 +1573,42 @@ fn register_touch_tap(
         }
         _ => false,
     }
+}
+
+fn cursor_char_selection(value: &Value, cursor: Cursor) -> (usize, usize) {
+    let to_chars = |index| value.until(index).to_string().chars().count();
+
+    match cursor.state(value) {
+        cursor::State::Index(index) => {
+            let index = to_chars(index);
+            (index, index)
+        }
+        cursor::State::Selection { start, end } => {
+            let start = to_chars(start);
+            let end = to_chars(end);
+            (start.min(end), start.max(end))
+        }
+    }
+}
+
+fn delete_surrounding(
+    value: &mut Value,
+    cursor: &mut Cursor,
+    before: usize,
+    after: usize,
+) {
+    let text = value.to_string();
+    let characters: Vec<_> = text.chars().collect();
+    let (selection_start, selection_end) =
+        cursor_char_selection(value, *cursor);
+    let start = selection_start.saturating_sub(before);
+    let end = selection_end.saturating_add(after).min(characters.len());
+    let prefix: String = characters[..start].iter().collect();
+    let suffix: String = characters[end..].iter().collect();
+    let caret = Value::new(&prefix).len();
+
+    *value = Value::new(&(prefix + &suffix));
+    cursor.move_to(caret);
 }
 
 #[derive(Debug, Clone)]
@@ -1915,5 +1989,17 @@ mod tests {
             }),
         ));
         assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn text_input_deletes_surrounding_selection_as_one_edit() {
+        let mut value = Value::new("aé中z");
+        let mut cursor = Cursor::default();
+        cursor.select_range(1, 2);
+
+        delete_surrounding(&mut value, &mut cursor, 1, 1);
+
+        assert_eq!(value.to_string(), "z");
+        assert_eq!(cursor.state(&value), cursor::State::Index(0));
     }
 }

@@ -452,6 +452,14 @@ impl editor::Editor for Editor {
                                 cosmic_text::Action::Delete,
                             );
                         }
+                        Edit::DeleteSurrounding { before, after } => {
+                            delete_surrounding(
+                                editor,
+                                font_system.raw(),
+                                before,
+                                after,
+                            );
+                        }
                     }
 
                     let cursor = editor.cursor();
@@ -710,6 +718,81 @@ impl editor::Editor for Editor {
 
         self.0 = Some(Arc::new(internal));
     }
+}
+
+fn delete_surrounding(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut cosmic_text::FontSystem,
+    before: usize,
+    after: usize,
+) {
+    let cursor = editor.cursor();
+    let (selection_start, selection_end) =
+        editor.selection_bounds().unwrap_or((cursor, cursor));
+    let lines: Vec<_> = buffer_from_editor(editor)
+        .lines
+        .iter()
+        .map(|line| line.text().to_owned())
+        .collect();
+    let start = move_cursor_left(&lines, selection_start, before);
+    let end = move_cursor_right(&lines, selection_end, after);
+
+    if start == end {
+        return;
+    }
+
+    editor.set_cursor(end);
+    editor.set_selection(cosmic_text::Selection::Normal(start));
+    editor.action(font_system, cosmic_text::Action::Backspace);
+}
+
+fn move_cursor_left(
+    lines: &[String],
+    mut cursor: cosmic_text::Cursor,
+    mut amount: usize,
+) -> cosmic_text::Cursor {
+    while amount > 0 {
+        if cursor.index > 0 {
+            cursor.index = lines[cursor.line][..cursor.index]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(index, _)| index);
+            amount -= 1;
+        } else if cursor.line > 0 {
+            cursor.line -= 1;
+            cursor.index = lines[cursor.line].len();
+            amount -= 1;
+        } else {
+            break;
+        }
+    }
+
+    cursor
+}
+
+fn move_cursor_right(
+    lines: &[String],
+    mut cursor: cosmic_text::Cursor,
+    mut amount: usize,
+) -> cosmic_text::Cursor {
+    while amount > 0 {
+        let line = &lines[cursor.line];
+        if cursor.index < line.len() {
+            cursor.index += line[cursor.index..]
+                .chars()
+                .next()
+                .map_or(0, char::len_utf8);
+            amount -= 1;
+        } else if cursor.line + 1 < lines.len() {
+            amount -= 1;
+            cursor.line += 1;
+            cursor.index = 0;
+        } else {
+            break;
+        }
+    }
+
+    cursor
 }
 
 impl Default for Editor {

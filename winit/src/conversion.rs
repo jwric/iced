@@ -335,6 +335,9 @@ pub fn window_event(
                 size.map(|(start, end)| start..end),
             ),
             Ime::Commit(content) => input_method::Event::Commit(content),
+            Ime::DeleteSurrounding { before, after } => {
+                input_method::Event::DeleteSurrounding { before, after }
+            }
             Ime::Disabled => input_method::Event::Closed,
         })),
         WindowEvent::Focused(focused) => Some(Event::Window(if focused {

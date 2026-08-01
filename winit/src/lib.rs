@@ -1205,6 +1205,15 @@ async fn run_instance<P>(
                                 continue;
                             }
 
+                            #[cfg(target_arch = "wasm32")]
+                            let reconcile_input_method =
+                                window_events.iter().any(|event| {
+                                    !matches!(
+                                        event,
+                                        core::Event::InputMethod(_)
+                                    )
+                                });
+
                             let (ui_state, statuses) = user_interfaces
                                 .get_mut(&id)
                                 .expect("Get user interface")
@@ -1235,9 +1244,17 @@ async fn run_instance<P>(
                                 user_interface::State::Updated {
                                     redraw_request: _redraw_request,
                                     mouse_interaction,
+                                    input_method: _input_method,
                                     ..
                                 } => {
                                     window.update_mouse(mouse_interaction);
+
+                                    #[cfg(target_arch = "wasm32")]
+                                    if reconcile_input_method {
+                                        window.request_input_method(
+                                            _input_method,
+                                        );
+                                    }
 
                                     #[cfg(not(
                                         feature = "unconditional-rendering"

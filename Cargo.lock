@@ -1350,7 +1350,6 @@ dependencies = [
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/jwric/winit?branch=0.30-wayland-dnd#d1c05cd006718d9a1cfa4562d96a5df12d5ffcf6"
 
 [[package]]
 name = "editor"
@@ -7476,7 +7475,6 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/jwric/winit?branch=0.30-wayland-dnd#d1c05cd006718d9a1cfa4562d96a5df12d5ffcf6"
 dependencies = [
  "ahash",
  "android-activity",

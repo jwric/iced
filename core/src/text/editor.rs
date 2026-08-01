@@ -115,6 +115,13 @@ pub enum Edit {
     Backspace,
     /// Delete the next character.
     Delete,
+    /// Delete characters around the current selection as one edit.
+    DeleteSurrounding {
+        /// The number of characters before the selection.
+        before: usize,
+        /// The number of characters after the selection.
+        after: usize,
+    },
 }
 
 /// A cursor movement.

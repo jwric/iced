@@ -235,7 +235,11 @@ web-sys = "0.3.69"
 web-time = "1.1"
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl"] }
 window_clipboard = { version = "0.5", default-features = false }
-winit = { git = "https://github.com/jwric/winit", branch = "0.30-wayland-dnd", default-features = false, features = ["rwh_06"] }
+winit = { path = "../../../../winit", default-features = false, features = ["rwh_06"] }
+
+# Move this pin back to the git branch after the web text agent lands.
+[patch."https://github.com/jwric/winit"]
+winit = { path = "../../../../winit" }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }

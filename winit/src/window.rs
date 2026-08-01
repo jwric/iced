@@ -21,6 +21,11 @@ use crate::runtime::window::raw_window_handle;
 
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::monitor::MonitorHandle;
+#[cfg(target_arch = "wasm32")]
+use winit::platform::web::{
+    LogicalRect, TextAgentAction, TextAgentPurpose, TextAgentSession,
+    WindowExtWebSys,
+};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -224,9 +229,25 @@ where
                 cursor,
                 purpose,
                 action,
+                text: _text,
+                selection: _selection,
+                autocapitalize: _autocapitalize,
+                multiline: _multiline,
                 preedit,
             } => {
+                #[cfg(not(target_arch = "wasm32"))]
                 self.enable_ime(cursor, purpose, action);
+
+                #[cfg(target_arch = "wasm32")]
+                self.enable_text_agent(
+                    cursor,
+                    purpose,
+                    action,
+                    _text,
+                    _selection,
+                    _autocapitalize,
+                    _multiline,
+                );
 
                 if let Some(preedit) = preedit {
                     if preedit.content.is_empty() {
@@ -281,6 +302,7 @@ where
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn enable_ime(
         &mut self,
         cursor: Rectangle,
@@ -302,10 +324,63 @@ where
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn enable_text_agent(
+        &mut self,
+        cursor: Rectangle,
+        purpose: input_method::Purpose,
+        action: input_method::Action,
+        text: String,
+        selection: (usize, usize),
+        autocapitalize: bool,
+        multiline: bool,
+    ) {
+        self.raw.set_text_agent(Some(TextAgentSession {
+            text,
+            selection,
+            caret_rect: LogicalRect::new(
+                LogicalPosition::new(cursor.x as f64, cursor.y as f64),
+                LogicalSize::new(cursor.width as f64, cursor.height as f64),
+            ),
+            purpose: match purpose {
+                input_method::Purpose::Normal => TextAgentPurpose::Normal,
+                input_method::Purpose::Secure => TextAgentPurpose::Secure,
+                input_method::Purpose::Terminal => TextAgentPurpose::Terminal,
+                input_method::Purpose::Number => TextAgentPurpose::Number,
+                input_method::Purpose::Phone => TextAgentPurpose::Phone,
+                input_method::Purpose::Url => TextAgentPurpose::Url,
+                input_method::Purpose::Email => TextAgentPurpose::Email,
+                input_method::Purpose::Search => TextAgentPurpose::Search,
+            },
+            action: match action {
+                input_method::Action::Enter => TextAgentAction::Enter,
+                input_method::Action::Done => TextAgentAction::Done,
+                input_method::Action::Go => TextAgentAction::Go,
+                input_method::Action::Next => TextAgentAction::Next,
+                input_method::Action::Previous => TextAgentAction::Previous,
+                input_method::Action::Search => TextAgentAction::Search,
+                input_method::Action::Send => TextAgentAction::Send,
+            },
+            autocapitalize,
+            multiline,
+        }));
+        self.ime_state = Some((cursor, purpose));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn disable_ime(&mut self) {
         if self.ime_state.is_some() {
             self.raw.set_ime_allowed(false);
             self.ime_state = None;
+        }
+
+        self.preedit = None;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn disable_ime(&mut self) {
+        if self.ime_state.take().is_some() {
+            self.raw.set_text_agent(None);
         }
 
         self.preedit = None;

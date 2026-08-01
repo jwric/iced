@@ -18,6 +18,14 @@ pub enum InputMethod<T = String> {
         purpose: Purpose,
         /// What the software keyboard's return key should do.
         action: Action,
+        /// The field contents mirrored by the input method.
+        text: T,
+        /// The selection as character indices into `text`.
+        selection: (usize, usize),
+        /// Whether automatic capitalization is enabled.
+        autocapitalize: bool,
+        /// Whether the field accepts multiple lines.
+        multiline: bool,
         /// The preedit to overlay on top of the input method dialog, if needed.
         ///
         /// Ideally, your widget will show pre-edits on-the-spot; but, since that can
@@ -144,6 +152,10 @@ impl InputMethod {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Normal,
     ///     action: Action::Enter,
+    ///     text: "1".to_owned(),
+    ///     selection: (1, 1),
+    ///     autocapitalize: true,
+    ///     multiline: false,
     ///     preedit: Some(Preedit { content: "1".to_owned(), selection: None, text_size: None }),
     /// };
     ///
@@ -151,6 +163,10 @@ impl InputMethod {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Secure,
     ///     action: Action::Enter,
+    ///     text: "2".to_owned(),
+    ///     selection: (1, 1),
+    ///     autocapitalize: false,
+    ///     multiline: false,
     ///     preedit: Some(Preedit { content: "2".to_owned(), selection: None, text_size: None }),
     /// };
     ///
@@ -188,11 +204,19 @@ impl<T> InputMethod<T> {
                 cursor,
                 purpose,
                 action,
+                text,
+                selection,
+                autocapitalize,
+                multiline,
                 preedit,
             } => InputMethod::Enabled {
                 cursor: *cursor,
                 purpose: *purpose,
                 action: *action,
+                text: text.as_ref().to_owned(),
+                selection: *selection,
+                autocapitalize: *autocapitalize,
+                multiline: *multiline,
                 preedit: preedit.as_ref().map(Preedit::to_owned),
             },
         }
@@ -232,6 +256,14 @@ pub enum Event {
     ///
     /// Right before this event, an empty [`Self::Preedit`] event will be issued.
     Commit(String),
+
+    /// Requests deletion around the current selection, measured in characters.
+    DeleteSurrounding {
+        /// The number of characters before the selection.
+        before: usize,
+        /// The number of characters after the selection.
+        after: usize,
+    },
 
     /// Notifies when the IME was disabled.
     ///

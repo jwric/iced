@@ -353,7 +353,7 @@ where
         state: &'b State<Highlighter>,
         renderer: &Renderer,
         layout: Layout<'_>,
-    ) -> InputMethod<&'b str> {
+    ) -> InputMethod {
         let Some(Focus {
             is_window_focused: true,
             ..
@@ -380,6 +380,10 @@ where
         );
 
         let position = cursor + translation;
+        let text_cursor = internal.editor.cursor();
+        drop(internal);
+        let (text, selection) =
+            editor_surrounding_text(self.content, text_cursor);
 
         InputMethod::Enabled {
             cursor: Rectangle::new(
@@ -388,7 +392,11 @@ where
             ),
             purpose: input_method::Purpose::Normal,
             action: self.ime_action,
-            preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+            text,
+            selection,
+            autocapitalize: true,
+            multiline: true,
+            preedit: state.preedit.clone(),
         }
     }
 }
@@ -828,6 +836,11 @@ where
                             Arc::new(text),
                         ))));
                     }
+                    Ime::DeleteSurrounding { before, after } => {
+                        shell.publish(on_edit(Action::Edit(
+                            Edit::DeleteSurrounding { before, after },
+                        )));
+                    }
                 },
                 Update::Binding(binding) => {
                     fn apply_binding<
@@ -937,6 +950,13 @@ where
                     }
                 }
             }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if !is_redraw && !matches!(event, Event::InputMethod(_)) {
+            shell.request_input_method(
+                &self.input_method(state, renderer, layout),
+            );
         }
 
         let status = {
@@ -1303,6 +1323,10 @@ enum Ime {
         selection: Option<ops::Range<usize>>,
     },
     Commit(String),
+    DeleteSurrounding {
+        before: usize,
+        after: usize,
+    },
 }
 
 impl<Message> Update<Message> {
@@ -1419,6 +1443,14 @@ impl<Message> Update<Message> {
                 {
                     Some(Update::InputMethod(Ime::Commit(content.clone())))
                 }
+                input_method::Event::DeleteSurrounding { before, after }
+                    if state.focus.is_some() =>
+                {
+                    Some(Update::InputMethod(Ime::DeleteSurrounding {
+                        before: *before,
+                        after: *after,
+                    }))
+                }
                 _ => None,
             },
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1456,6 +1488,68 @@ impl<Message> Update<Message> {
             _ => None,
         }
     }
+}
+
+// Keep at most 2,048 characters of context on each side of the selection.
+const TEXT_AGENT_CONTEXT_CHARS: usize = 2_048;
+
+fn editor_surrounding_text<R>(
+    content: &Content<R>,
+    cursor: Cursor,
+) -> (String, (usize, usize))
+where
+    R: text::Renderer,
+{
+    // HTML text controls normalize line endings to LF.
+    let mut text = String::new();
+    let mut lines = content.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        text.push_str(&line.text);
+
+        if lines.peek().is_some() {
+            text.push('\n');
+        }
+    }
+
+    let caret = position_char_index(content, cursor.position);
+    let anchor = cursor
+        .selection
+        .map_or(caret, |position| position_char_index(content, position));
+    let selection_start = caret.min(anchor);
+    let selection_end = caret.max(anchor);
+    let characters: Vec<_> = text.chars().collect();
+    let window_start = selection_start.saturating_sub(TEXT_AGENT_CONTEXT_CHARS);
+    let window_end = selection_end
+        .saturating_add(TEXT_AGENT_CONTEXT_CHARS)
+        .min(characters.len());
+
+    (
+        characters[window_start..window_end].iter().collect(),
+        (selection_start - window_start, selection_end - window_start),
+    )
+}
+
+fn position_char_index<R>(content: &Content<R>, position: Position) -> usize
+where
+    R: text::Renderer,
+{
+    let mut index = 0;
+
+    for line_index in 0..position.line {
+        let Some(line) = content.line(line_index) else {
+            return index;
+        };
+        index += line.text.chars().count();
+        index += 1;
+    }
+
+    if let Some(line) = content.line(position.line) {
+        let column = position.column.min(line.text.len());
+        index += line.text[..column].chars().count();
+    }
+
+    index
 }
 
 #[cfg(test)]
@@ -1585,6 +1679,32 @@ mod tests {
                 mouse::Cursor::Unavailable,
             ),
             Some(Update::Binding(Binding::Unfocus))
+        ));
+    }
+
+    #[test]
+    fn editor_maps_delete_surrounding_while_focused() {
+        let mut state = state();
+        state.focus = Some(Focus::now());
+
+        let update = Update::<()>::from_event(
+            &Event::InputMethod(input_method::Event::DeleteSurrounding {
+                before: 2,
+                after: 3,
+            }),
+            &mut state,
+            Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0)),
+            Padding::default(),
+            mouse::Cursor::Unavailable,
+            None,
+        );
+
+        assert!(matches!(
+            update,
+            Some(Update::InputMethod(Ime::DeleteSurrounding {
+                before: 2,
+                after: 3
+            }))
         ));
     }
 }
