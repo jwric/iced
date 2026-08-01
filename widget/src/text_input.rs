@@ -107,6 +107,8 @@ pub struct TextInput<
     placeholder: String,
     value: Value,
     is_secure: bool,
+    ime_action: input_method::Action,
+    ime_purpose: input_method::Purpose,
     font: Option<Renderer::Font>,
     width: Length,
     padding: Padding,
@@ -138,6 +140,8 @@ where
             placeholder: String::from(placeholder),
             value: Value::new(value),
             is_secure: false,
+            ime_action: input_method::Action::default(),
+            ime_purpose: input_method::Purpose::default(),
             font: None,
             width: Length::Fill,
             padding: DEFAULT_PADDING,
@@ -156,6 +160,21 @@ where
     /// Sets the [`widget::Id`] of the [`TextInput`].
     pub fn id(mut self, id: impl Into<widget::Id>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Sets the kind of content this field takes, which a software keyboard
+    /// uses to choose a layout. A secure field overrides this.
+    pub fn input_purpose(mut self, purpose: input_method::Purpose) -> Self {
+        self.ime_purpose = purpose;
+        self
+    }
+
+    /// Sets what a software keyboard's return key should do.
+    ///
+    /// A physical keyboard ignores this.
+    pub fn action_key(mut self, action: input_method::Action) -> Self {
+        self.ime_action = action;
         self
     }
 
@@ -435,8 +454,9 @@ where
             purpose: if self.is_secure {
                 input_method::Purpose::Secure
             } else {
-                input_method::Purpose::Normal
+                self.ime_purpose
             },
+            action: self.ime_action,
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
         }
     }
@@ -714,9 +734,18 @@ where
             );
         };
 
-        match &event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            | Event::Touch(touch::Event::FingerPressed { .. }) => {
+        let touch_tap = register_touch_tap(
+            &mut state::<Renderer>(tree).touch_pending,
+            event,
+        );
+
+        let tap_event = touch_tap.then_some(Event::Mouse(
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+        ));
+        let event = tap_event.as_ref().unwrap_or(event);
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let state = state::<Renderer>(tree);
                 let cursor_before = state.cursor;
 
@@ -823,6 +852,10 @@ where
                     }
 
                     shell.capture_event();
+                }
+
+                if touch_tap {
+                    state.is_dragging = None;
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
@@ -1467,6 +1500,7 @@ pub struct State<P: text::Paragraph> {
     is_pasting: Option<Value>,
     preedit: Option<input_method::Preedit>,
     last_click: Option<mouse::Click>,
+    touch_pending: Option<touch::Finger>,
     cursor: Cursor,
     keyboard_modifiers: keyboard::Modifiers,
     // TODO: Add stateful horizontal scrolling offset
@@ -1476,6 +1510,31 @@ fn state<Renderer: text::Renderer>(
     tree: &mut Tree,
 ) -> &mut State<Renderer::Paragraph> {
     tree.state.downcast_mut::<State<Renderer::Paragraph>>()
+}
+
+fn register_touch_tap(
+    pending: &mut Option<touch::Finger>,
+    event: &Event,
+) -> bool {
+    match event {
+        Event::Touch(touch::Event::FingerPressed { id, .. }) => {
+            *pending = Some(*id);
+            false
+        }
+        Event::Touch(touch::Event::FingerLifted { id, .. })
+            if *pending == Some(*id) =>
+        {
+            *pending = None;
+            true
+        }
+        Event::Touch(touch::Event::FingerLost { id, .. })
+            if *pending == Some(*id) =>
+        {
+            *pending = None;
+            false
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1523,6 +1582,7 @@ impl<P: text::Paragraph> State<P> {
     /// Unfocuses the [`TextInput`].
     pub fn unfocus(&mut self) {
         self.is_focused = None;
+        self.touch_pending = None;
     }
 
     /// Moves the [`Cursor`] of the [`TextInput`] to the front of the input text.
@@ -1811,5 +1871,49 @@ fn alignment_offset(
             }
             alignment::Horizontal::Right => text_bounds_width - text_min_width,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_input_touch_tap_commits_only_on_matching_lift() {
+        let id = touch::Finger(1);
+        let mut pending = None;
+
+        assert!(!register_touch_tap(
+            &mut pending,
+            &Event::Touch(touch::Event::FingerPressed {
+                id,
+                position: Point::ORIGIN,
+                layout_units_per_dip: 1.0,
+            }),
+        ));
+        assert_eq!(pending, Some(id));
+        assert!(register_touch_tap(
+            &mut pending,
+            &Event::Touch(touch::Event::FingerLifted {
+                id,
+                position: Point::ORIGIN,
+            }),
+        ));
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn text_input_lost_touch_cancels_tap() {
+        let id = touch::Finger(1);
+        let mut pending = Some(id);
+
+        assert!(!register_touch_tap(
+            &mut pending,
+            &Event::Touch(touch::Event::FingerLost {
+                id,
+                position: Point::ORIGIN,
+            }),
+        ));
+        assert_eq!(pending, None);
     }
 }

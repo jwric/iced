@@ -1,5 +1,5 @@
 use crate::conversion;
-use crate::core::{Color, PixelScaleMode, Size};
+use crate::core::{Color, PixelScaleMode, Point, Size};
 use crate::core::{mouse, theme, window};
 use crate::graphics::Viewport;
 use crate::program::{self, Program};
@@ -19,6 +19,7 @@ where
     viewport: Viewport,
     surface_version: u64,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
+    touch_cursor_released: bool,
     modifiers: winit::keyboard::ModifiersState,
     theme: Option<P::Theme>,
     theme_mode: theme::Mode,
@@ -63,7 +64,18 @@ where
         let style = program.style(theme.as_ref().unwrap_or(&default_theme));
 
         let viewport = {
+            #[cfg(not(target_arch = "wasm32"))]
             let physical_size = window.inner_size();
+
+            // Firefox for Android can expose
+            // `devicePixelContentBoxSize` without ever delivering the
+            // corresponding ResizeObserver callback. In that case, winit's
+            // cached inner size remains 0x0 during startup even though the
+            // canvas already fills the page. Seed the viewport directly from
+            // the rendered canvas bounds so the compositor has a valid
+            // surface before the first browser resize event.
+            #[cfg(target_arch = "wasm32")]
+            let physical_size = web_canvas_physical_size(window);
 
             Viewport::with_physical_size(
                 Size::new(physical_size.width, physical_size.height),
@@ -77,6 +89,7 @@ where
             viewport,
             surface_version: 0,
             cursor_position: None,
+            touch_cursor_released: false,
             modifiers: winit::keyboard::ModifiersState::default(),
             theme,
             theme_mode,
@@ -111,6 +124,10 @@ where
             .calculate_pixel_scale(self.viewport.scale_factor() as f64);
         let scale = pixel_scale as u32;
 
+        if scale == 1 {
+            return self.viewport.logical_size();
+        }
+
         Size::new(
             (logical.width / scale) as f32,
             (logical.height / scale) as f32,
@@ -135,21 +152,38 @@ where
     pub fn cursor(&self) -> mouse::Cursor {
         self.cursor_position
             .map(|cursor_position| {
-                let mut point =
-                    conversion::cursor_position(cursor_position, 1.0);
-
-                // Adjust for pixel scaling - the cursor is in window space
-                // but rendering happens at 1/pixel_scale resolution
                 let pixel_scale = self.pixel_scale();
-                if pixel_scale > 1 {
-                    point.x /= pixel_scale as f32;
-                    point.y /= pixel_scale as f32;
+                if pixel_scale == 1 {
+                    conversion::cursor_position(
+                        cursor_position,
+                        self.viewport.scale_factor(),
+                    )
+                } else {
+                    Point::new(
+                        cursor_position.x as f32 / pixel_scale as f32,
+                        cursor_position.y as f32 / pixel_scale as f32,
+                    )
                 }
-
-                point
             })
             .map(mouse::Cursor::Available)
             .unwrap_or(mouse::Cursor::Unavailable)
+    }
+
+    /// Drops a cursor position that came from a touch sequence which has since
+    /// ended, reporting whether it did. A touchscreen never sends `CursorLeft`,
+    /// so without this the last place a finger landed stays hovered forever.
+    ///
+    /// This must run after the event batch carrying the release has been
+    /// dispatched, never when the release arrives: widgets publish from
+    /// `FingerLifted` only while the cursor is still over their bounds.
+    pub(crate) fn release_touch_cursor(&mut self) -> bool {
+        if !self.touch_cursor_released {
+            return false;
+        }
+
+        self.touch_cursor_released = false;
+        self.cursor_position = None;
+        true
     }
 
     pub fn modifiers(&self) -> winit::keyboard::ModifiersState {
@@ -180,28 +214,36 @@ where
     ) {
         match event {
             WindowEvent::Resized(new_size) => {
-                let k = self.pixel_scale();
-
                 // Use the actual physical size from winit
                 let size = Size::new(new_size.width, new_size.height);
 
-                if k > 1
-                    && !window.is_maximized()
-                    && window.fullscreen().is_none()
+                // Native windows can be snapped to the pixel grid. A browser
+                // canvas is CSS-sized and cannot be forced to a nearby
+                // physical size; trying to do so makes keyboard-driven
+                // visual viewport resizes stall indefinitely.
+                #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let snapped_w = (size.width / k).max(1) * k;
-                    let snapped_h = (size.height / k).max(1) * k;
+                    let k = self.pixel_scale();
+                    if k > 1
+                        && !window.is_maximized()
+                        && window.fullscreen().is_none()
+                    {
+                        let snapped_w = (size.width / k).max(1) * k;
+                        let snapped_h = (size.height / k).max(1) * k;
 
-                    if snapped_w != size.width || snapped_h != size.height {
-                        let snapped =
-                            winit::dpi::PhysicalSize::new(snapped_w, snapped_h);
+                        if snapped_w != size.width || snapped_h != size.height {
+                            let snapped = winit::dpi::PhysicalSize::new(
+                                snapped_w, snapped_h,
+                            );
 
-                        // Request the snapped size...
-                        let _ = window.request_inner_size(snapped);
+                            // Request the snapped size...
+                            let _ = window.request_inner_size(snapped);
 
-                        // ...but DO NOT change viewport yet, because the window is still `new_size`.
-                        // Wait for the next Resized event that matches `snapped`.
-                        return;
+                            // ...but DO NOT change viewport yet, because the
+                            // window is still `new_size`. Wait for the next
+                            // Resized event that matches `snapped`.
+                            return;
+                        }
                     }
                 }
 
@@ -216,25 +258,35 @@ where
                 scale_factor: sf, ..
             } => {
                 let new_inner_size = window.inner_size();
+
+                #[cfg(target_arch = "wasm32")]
+                let size =
+                    Size::new(new_inner_size.width, new_inner_size.height);
+
+                #[cfg(not(target_arch = "wasm32"))]
                 let mut size =
                     Size::new(new_inner_size.width, new_inner_size.height);
-                let k = self.pixel_scale();
 
-                if k > 1
-                    && !window.is_maximized()
-                    && window.fullscreen().is_none()
+                #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let snapped_w = (size.width / k).max(1) * k;
-                    let snapped_h = (size.height / k).max(1) * k;
+                    let k = self.pixel_scale();
+                    if k > 1
+                        && !window.is_maximized()
+                        && window.fullscreen().is_none()
+                    {
+                        let snapped_w = (size.width / k).max(1) * k;
+                        let snapped_h = (size.height / k).max(1) * k;
 
-                    if snapped_w != size.width || snapped_h != size.height {
-                        let snapped =
-                            winit::dpi::PhysicalSize::new(snapped_w, snapped_h);
-                        let _ = window.request_inner_size(snapped);
-                        return;
+                        if snapped_w != size.width || snapped_h != size.height {
+                            let snapped = winit::dpi::PhysicalSize::new(
+                                snapped_w, snapped_h,
+                            );
+                            let _ = window.request_inner_size(snapped);
+                            return;
+                        }
+
+                        size = Size::new(snapped_w, snapped_h);
                     }
-
-                    size = Size::new(snapped_w, snapped_h);
                 }
 
                 self.viewport = Viewport::with_physical_size(
@@ -243,11 +295,21 @@ where
                 );
                 self.surface_version += 1;
             }
-            WindowEvent::CursorMoved { position, .. }
-            | WindowEvent::Touch(Touch {
-                location: position, ..
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some(*position);
+                self.touch_cursor_released = false;
+            }
+            WindowEvent::Touch(Touch {
+                location: position,
+                phase,
+                ..
             }) => {
                 self.cursor_position = Some(*position);
+                self.touch_cursor_released = matches!(
+                    phase,
+                    winit::event::TouchPhase::Ended
+                        | winit::event::TouchPhase::Cancelled
+                );
             }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_position = None;
@@ -267,6 +329,29 @@ where
             }
             _ => {}
         }
+    }
+
+    /// Synchronize a browser window with the canvas's rendered CSS bounds.
+    ///
+    /// Firefox for Android may not emit winit's ResizeObserver event when the
+    /// visual viewport changes for the software keyboard. Polling at the next
+    /// browser input event keeps the compositor surface and UI layout atomic.
+    #[cfg(target_arch = "wasm32")]
+    pub fn synchronize_web_viewport(&mut self, window: &Window) -> bool {
+        let physical_size = web_canvas_physical_size(window);
+
+        if self.viewport.physical_size()
+            == Size::new(physical_size.width, physical_size.height)
+        {
+            return false;
+        }
+
+        self.viewport = Viewport::with_physical_size(
+            Size::new(physical_size.width, physical_size.height),
+            window.scale_factor() as f32 * self.scale_factor,
+        );
+        self.surface_version += 1;
+        true
     }
 
     pub fn synchronize(
@@ -338,4 +423,20 @@ where
             self.theme_mode = new_mode;
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_canvas_physical_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+    use winit::platform::web::WindowExtWebSys;
+
+    let bounds = window
+        .canvas()
+        .expect("Get window canvas")
+        .get_bounding_client_rect();
+    let scale = window.scale_factor();
+
+    winit::dpi::PhysicalSize::new(
+        (bounds.width() * scale).round().max(1.0) as u32,
+        (bounds.height() * scale).round().max(1.0) as u32,
+    )
 }

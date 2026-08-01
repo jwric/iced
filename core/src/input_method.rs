@@ -16,6 +16,8 @@ pub enum InputMethod<T = String> {
         cursor: Rectangle,
         /// The [`Purpose`] of the input method.
         purpose: Purpose,
+        /// What the software keyboard's return key should do.
+        action: Action,
         /// The preedit to overlay on top of the input method dialog, if needed.
         ///
         /// Ideally, your widget will show pre-edits on-the-spot; but, since that can
@@ -69,6 +71,45 @@ impl Preedit {
     }
 }
 
+/// What a software keyboard's return key performs.
+///
+/// A physical keyboard ignores this; it exists so a field can label the one key
+/// a touch keyboard gives it. A composer that sends on return should say so, and
+/// a filter field should not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Action {
+    /// Insert a line break.
+    #[default]
+    Enter,
+    /// Finish input.
+    Done,
+    /// Go to whatever was typed.
+    Go,
+    /// Move to the next field.
+    Next,
+    /// Move to the previous field.
+    Previous,
+    /// Run a search.
+    Search,
+    /// Send the composed text.
+    Send,
+}
+
+impl Action {
+    /// The name a host uses for this action.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Enter => "enter",
+            Action::Done => "done",
+            Action::Go => "go",
+            Action::Next => "next",
+            Action::Previous => "previous",
+            Action::Search => "search",
+            Action::Send => "send",
+        }
+    }
+}
+
 /// The purpose of an [`InputMethod`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Purpose {
@@ -81,23 +122,35 @@ pub enum Purpose {
     ///
     /// For example, that could alter OSK on Wayland to show extra buttons.
     Terminal,
+    /// The field takes a number.
+    Number,
+    /// The field takes a telephone number.
+    Phone,
+    /// The field takes a URL.
+    Url,
+    /// The field takes an email address.
+    Email,
+    /// The field is a search query.
+    Search,
 }
 
 impl InputMethod {
     /// Merges two [`InputMethod`] strategies, prioritizing the first one when both open:
     /// ```
-    /// # use iced_core::input_method::{InputMethod, Purpose, Preedit};
+    /// # use iced_core::input_method::{Action, InputMethod, Purpose, Preedit};
     /// # use iced_core::{Point, Rectangle, Size};
     ///
     /// let open = InputMethod::Enabled {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Normal,
+    ///     action: Action::Enter,
     ///     preedit: Some(Preedit { content: "1".to_owned(), selection: None, text_size: None }),
     /// };
     ///
     /// let open_2 = InputMethod::Enabled {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Secure,
+    ///     action: Action::Enter,
     ///     preedit: Some(Preedit { content: "2".to_owned(), selection: None, text_size: None }),
     /// };
     ///
@@ -134,10 +187,12 @@ impl<T> InputMethod<T> {
             Self::Enabled {
                 cursor,
                 purpose,
+                action,
                 preedit,
             } => InputMethod::Enabled {
                 cursor: *cursor,
                 purpose: *purpose,
+                action: *action,
                 preedit: preedit.as_ref().map(Preedit::to_owned),
             },
         }

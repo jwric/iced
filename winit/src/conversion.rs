@@ -609,24 +609,29 @@ pub fn touch_event(
     pixel_scale: u32,
 ) -> touch::Event {
     let id = touch::Finger(touch.id);
-    let position = if pixel_scale > 1 {
+    let (position, layout_units_per_dip) = if pixel_scale > 1 {
         // When pixel scaling is enabled, use physical coordinates directly
-        Point::new(
-            (touch.location.x as f32) / (pixel_scale as f32),
-            (touch.location.y as f32) / (pixel_scale as f32),
+        (
+            Point::new(
+                (touch.location.x as f32) / (pixel_scale as f32),
+                (touch.location.y as f32) / (pixel_scale as f32),
+            ),
+            scale_factor / pixel_scale as f32,
         )
     } else {
         // Normal case: convert to logical coordinates using DPI scale
         let location =
             touch.location.to_logical::<f64>(f64::from(scale_factor));
 
-        Point::new(location.x as f32, location.y as f32)
+        (Point::new(location.x as f32, location.y as f32), 1.0)
     };
 
     match touch.phase {
-        winit::event::TouchPhase::Started => {
-            touch::Event::FingerPressed { id, position }
-        }
+        winit::event::TouchPhase::Started => touch::Event::FingerPressed {
+            id,
+            position,
+            layout_units_per_dip,
+        },
         winit::event::TouchPhase::Moved => {
             touch::Event::FingerMoved { id, position }
         }
@@ -1276,6 +1281,14 @@ pub fn ime_purpose(
         input_method::Purpose::Normal => winit::window::ImePurpose::Normal,
         input_method::Purpose::Secure => winit::window::ImePurpose::Password,
         input_method::Purpose::Terminal => winit::window::ImePurpose::Terminal,
+        // The remaining purposes are content hints a software keyboard uses to
+        // choose a layout. This backend has no equivalent, so they fall back to
+        // ordinary text and are honoured by the web host instead.
+        input_method::Purpose::Number
+        | input_method::Purpose::Phone
+        | input_method::Purpose::Url
+        | input_method::Purpose::Email
+        | input_method::Purpose::Search => winit::window::ImePurpose::Normal,
     }
 }
 

@@ -44,6 +44,7 @@ use crate::core::text::highlighter::{self, Highlighter};
 use crate::core::text::{self, LineHeight, Text, Wrapping};
 use crate::core::theme;
 use crate::core::time::{Duration, Instant};
+use crate::core::touch;
 use crate::core::widget::operation;
 use crate::core::widget::{self, Widget};
 use crate::core::window;
@@ -120,6 +121,7 @@ pub struct TextEditor<
     padding: Padding,
     wrapping: Wrapping,
     class: Theme::Class<'a>,
+    ime_action: input_method::Action,
     key_binding: Option<Box<dyn Fn(KeyPress) -> Option<Binding<Message>> + 'a>>,
     on_edit: Option<Box<dyn Fn(Action) -> Message + 'a>>,
     highlighter_settings: Highlighter::Settings,
@@ -152,6 +154,7 @@ where
             padding: Padding::new(5.0),
             wrapping: Wrapping::default(),
             class: <Theme as Catalog>::default(),
+            ime_action: input_method::Action::default(),
             key_binding: None,
             on_edit: None,
             highlighter_settings: (),
@@ -176,6 +179,14 @@ where
     Theme: Catalog,
     Renderer: text::Renderer,
 {
+    /// Sets what a software keyboard's return key should do.
+    ///
+    /// A physical keyboard ignores this.
+    pub fn action_key(mut self, action: input_method::Action) -> Self {
+        self.ime_action = action;
+        self
+    }
+
     /// Sets the placeholder of the [`TextEditor`].
     pub fn placeholder(
         mut self,
@@ -287,6 +298,7 @@ where
     ) -> TextEditor<'a, H, Message, Theme, Renderer> {
         TextEditor {
             id: self.id,
+            ime_action: self.ime_action,
             content: self.content,
             placeholder: self.placeholder,
             font: self.font,
@@ -375,6 +387,7 @@ where
                 Size::new(1.0, f32::from(line_height)),
             ),
             purpose: input_method::Purpose::Normal,
+            action: self.ime_action,
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
         }
     }
@@ -526,6 +539,7 @@ pub struct State<Highlighter: text::Highlighter> {
     preedit: Option<input_method::Preedit>,
     last_click: Option<mouse::Click>,
     drag_click: Option<mouse::click::Kind>,
+    touch_pending: Option<touch::Finger>,
     partial_scroll: f32,
     last_theme: RefCell<Option<String>>,
     highlighter: RefCell<Highlighter>,
@@ -581,6 +595,7 @@ impl<Highlighter: text::Highlighter> operation::Focusable
 
     fn unfocus(&mut self) {
         self.focus = None;
+        self.touch_pending = None;
     }
 }
 
@@ -601,6 +616,7 @@ where
             preedit: None,
             last_click: None,
             drag_click: None,
+            touch_pending: None,
             partial_scroll: 0.0,
             last_theme: RefCell::default(),
             highlighter: RefCell::new(Highlighter::new(
@@ -755,6 +771,21 @@ where
                     shell.publish(on_edit(action));
                     shell.capture_event();
                 }
+                Update::Tap(click) => {
+                    let action = match click.kind() {
+                        mouse::click::Kind::Single => {
+                            Action::Click(click.position())
+                        }
+                        mouse::click::Kind::Double => Action::SelectWord,
+                        mouse::click::Kind::Triple => Action::SelectLine,
+                    };
+
+                    state.focus = Some(Focus::now());
+                    state.last_click = Some(click);
+
+                    shell.publish(on_edit(action));
+                    shell.capture_event();
+                }
                 Update::Drag(position) => {
                     shell.publish(on_edit(Action::Drag(position)));
                 }
@@ -818,6 +849,7 @@ where
                             Binding::Unfocus => {
                                 state.focus = None;
                                 state.drag_click = None;
+                                state.touch_pending = None;
                             }
                             Binding::Copy => {
                                 if let Some(selection) = content.selection() {
@@ -1256,6 +1288,7 @@ impl<Message> Binding<Message> {
 
 enum Update<Message> {
     Click(mouse::Click),
+    Tap(mouse::Click),
     Drag(Point),
     Release,
     Scroll(f32),
@@ -1275,7 +1308,7 @@ enum Ime {
 impl<Message> Update<Message> {
     fn from_event<H: Highlighter>(
         event: &Event,
-        state: &State<H>,
+        state: &mut State<H>,
         bounds: Rectangle,
         padding: Padding,
         cursor: mouse::Cursor,
@@ -1330,6 +1363,41 @@ impl<Message> Update<Message> {
                     }))
                 }
                 _ => None,
+            },
+            Event::Touch(event) => match event {
+                touch::Event::FingerPressed { id, .. } => {
+                    state.touch_pending = Some(*id);
+                    None
+                }
+                touch::Event::FingerLifted { id, .. }
+                    if state.touch_pending == Some(*id) =>
+                {
+                    state.touch_pending = None;
+
+                    if let Some(cursor_position) = cursor.position_in(bounds) {
+                        let cursor_position = cursor_position
+                            - Vector::new(padding.left, padding.top);
+
+                        Some(Update::Tap(mouse::Click::new(
+                            cursor_position,
+                            mouse::Button::Left,
+                            state.last_click,
+                        )))
+                    } else if state.focus.is_some() {
+                        binding(Binding::Unfocus)
+                    } else {
+                        None
+                    }
+                }
+                touch::Event::FingerLost { id, .. }
+                    if state.touch_pending == Some(*id) =>
+                {
+                    state.touch_pending = None;
+                    Some(Update::Release)
+                }
+                touch::Event::FingerLifted { .. }
+                | touch::Event::FingerLost { .. } => None,
+                touch::Event::FingerMoved { .. } => None,
             },
             Event::InputMethod(event) => match event {
                 input_method::Event::Opened | input_method::Event::Closed => {
@@ -1387,6 +1455,137 @@ impl<Message> Update<Message> {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::text::highlighter::PlainText;
+
+    fn state() -> State<PlainText> {
+        State {
+            focus: None,
+            preedit: None,
+            last_click: None,
+            drag_click: None,
+            touch_pending: None,
+            partial_scroll: 0.0,
+            last_theme: RefCell::default(),
+            highlighter: RefCell::new(PlainText),
+            highlighter_settings: (),
+            highlighter_format_address: 0,
+        }
+    }
+
+    fn touch_event(
+        state: &mut State<PlainText>,
+        event: touch::Event,
+        cursor: mouse::Cursor,
+    ) -> Option<Update<()>> {
+        Update::from_event(
+            &Event::Touch(event),
+            state,
+            Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0)),
+            Padding::default(),
+            cursor,
+            None,
+        )
+    }
+
+    #[test]
+    fn lost_touch_cancels_editor_tap_without_focus_or_click() {
+        let id = touch::Finger(1);
+        let mut state = state();
+        let cursor = mouse::Cursor::Available(Point::new(20.0, 20.0));
+
+        assert!(
+            touch_event(
+                &mut state,
+                touch::Event::FingerPressed {
+                    id,
+                    position: Point::new(20.0, 20.0),
+                    layout_units_per_dip: 1.0,
+                },
+                cursor,
+            )
+            .is_none()
+        );
+        assert!(state.focus.is_none());
+        assert!(state.last_click.is_none());
+
+        assert!(matches!(
+            touch_event(
+                &mut state,
+                touch::Event::FingerLost {
+                    id,
+                    position: Point::new(20.0, 30.0),
+                },
+                cursor,
+            ),
+            Some(Update::Release)
+        ));
+        assert!(state.focus.is_none());
+        assert!(state.last_click.is_none());
+        assert!(state.touch_pending.is_none());
+    }
+
+    #[test]
+    fn editor_touch_click_is_emitted_on_lift() {
+        let id = touch::Finger(1);
+        let mut state = state();
+        let cursor = mouse::Cursor::Available(Point::new(20.0, 20.0));
+
+        let _ = touch_event(
+            &mut state,
+            touch::Event::FingerPressed {
+                id,
+                position: Point::new(20.0, 20.0),
+                layout_units_per_dip: 1.0,
+            },
+            cursor,
+        );
+
+        assert!(matches!(
+            touch_event(
+                &mut state,
+                touch::Event::FingerLifted {
+                    id,
+                    position: Point::new(20.0, 20.0),
+                },
+                cursor,
+            ),
+            Some(Update::Tap(_))
+        ));
+    }
+
+    #[test]
+    fn editor_touch_lift_outside_unfocuses() {
+        let id = touch::Finger(1);
+        let mut state = state();
+        state.focus = Some(Focus::now());
+
+        let _ = touch_event(
+            &mut state,
+            touch::Event::FingerPressed {
+                id,
+                position: Point::new(120.0, 20.0),
+                layout_units_per_dip: 1.0,
+            },
+            mouse::Cursor::Unavailable,
+        );
+
+        assert!(matches!(
+            touch_event(
+                &mut state,
+                touch::Event::FingerLifted {
+                    id,
+                    position: Point::new(120.0, 20.0),
+                },
+                mouse::Cursor::Unavailable,
+            ),
+            Some(Update::Binding(Binding::Unfocus))
+        ));
     }
 }
 

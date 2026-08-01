@@ -529,6 +529,7 @@ pub use crate::core::animation;
 pub use crate::core::border;
 pub use crate::core::color;
 pub use crate::core::gradient;
+pub use crate::core::input_method;
 pub use crate::core::padding;
 pub use crate::core::theme;
 pub use crate::core::{

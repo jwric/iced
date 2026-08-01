@@ -42,6 +42,16 @@ use crate::core::{
 
 pub use operation::scrollable::{AbsoluteOffset, RelativeOffset};
 
+const TOUCH_SLOP: f32 = 8.0;
+const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
+const VELOCITY_MIN_DURATION: Duration = Duration::from_millis(5);
+const FLING_MIN_VELOCITY: f32 = 60.0;
+const FLING_MAX_VELOCITY: f32 = 12000.0;
+const FLING_DECAY: Duration = Duration::from_millis(325);
+const FLING_MAX_FRAME: Duration = Duration::from_millis(50);
+const FLING_STALE_FRAME: Duration = Duration::from_millis(250);
+const VELOCITY_SAMPLES: usize = 8;
+
 /// A widget that can vertically display an infinite amount of content with a
 /// scrollbar.
 ///
@@ -660,7 +670,192 @@ where
             }
         }
 
+        // Touch arbitration must precede child dispatch so captured presses can
+        // still become scrolls.
+        let mut withhold_touch_from_content = match event {
+            Event::Touch(
+                touch::Event::FingerMoved { id, .. }
+                | touch::Event::FingerLifted { id, .. }
+                | touch::Event::FingerLost { id, .. },
+            ) => owns_scrolling_touch(state.interaction, *id),
+            _ => false,
+        };
+
+        match event {
+            Event::Touch(touch::Event::FingerPressed {
+                id,
+                position,
+                layout_units_per_dip,
+            }) => {
+                let was_flinging = matches!(
+                    state.interaction,
+                    Interaction::TouchFlinging { .. }
+                );
+
+                // Ancestors translate the cursor into the layout's coordinates.
+                if cursor_over_scrollable.is_some()
+                    && can_start_touch(state.interaction)
+                {
+                    state.interaction = Interaction::TouchPending {
+                        id: *id,
+                        origin: *position,
+                        layout_units_per_dip: *layout_units_per_dip,
+                    };
+
+                    if was_flinging {
+                        withhold_touch_from_content = true;
+                    }
+                }
+            }
+            Event::Touch(touch::Event::FingerMoved { id, position }) => {
+                match state.interaction {
+                    Interaction::TouchPending {
+                        id: active,
+                        origin,
+                        layout_units_per_dip,
+                    } if active == *id
+                        && starts_touch_scroll(
+                            self.direction,
+                            origin,
+                            *position,
+                            layout_units_per_dip,
+                            bounds,
+                            content_bounds,
+                        ) =>
+                    {
+                        let now = Instant::now();
+
+                        state.interaction = Interaction::TouchScrolling {
+                            id: *id,
+                            last_position: *position,
+                            samples: VelocitySamples::new(now, *position),
+                            layout_units_per_dip,
+                        };
+                        withhold_touch_from_content = true;
+
+                        let translation = state.translation(
+                            self.direction,
+                            bounds,
+                            content_bounds,
+                        );
+
+                        let cursor = match cursor_over_scrollable {
+                            Some(cursor_position)
+                                if !(mouse_over_x_scrollbar
+                                    || mouse_over_y_scrollbar) =>
+                            {
+                                mouse::Cursor::Available(
+                                    cursor_position + translation,
+                                )
+                            }
+                            _ => cursor.levitate() + translation,
+                        };
+
+                        let had_input_method =
+                            shell.input_method().is_enabled();
+
+                        self.content.as_widget_mut().update(
+                            &mut tree.children[0],
+                            &Event::Touch(touch::Event::FingerLost {
+                                id: *id,
+                                position: *position,
+                            }),
+                            content,
+                            cursor,
+                            renderer,
+                            clipboard,
+                            shell,
+                            &Rectangle {
+                                y: bounds.y + translation.y,
+                                x: bounds.x + translation.x,
+                                ..bounds
+                            },
+                        );
+
+                        if !had_input_method
+                            && let InputMethod::Enabled { cursor, .. } =
+                                shell.input_method_mut()
+                        {
+                            *cursor = *cursor - translation;
+                        }
+
+                        shell.capture_event();
+                    }
+                    Interaction::TouchScrolling {
+                        id: active,
+                        last_position,
+                        mut samples,
+                        layout_units_per_dip,
+                    } if active == *id => {
+                        let now = Instant::now();
+                        let delta = last_position - *position;
+
+                        state.scroll(
+                            touch_delta(self.direction, delta),
+                            bounds,
+                            content_bounds,
+                        );
+
+                        samples.push(now, *position);
+                        state.interaction = Interaction::TouchScrolling {
+                            id: *id,
+                            last_position: *position,
+                            samples,
+                            layout_units_per_dip,
+                        };
+
+                        let _ = notify_scroll(
+                            state,
+                            &self.on_scroll,
+                            bounds,
+                            content_bounds,
+                            shell,
+                        );
+
+                        shell.capture_event();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Touch(touch::Event::FingerLifted { id, position }) => {
+                let was_flinging = matches!(
+                    state.interaction,
+                    Interaction::TouchFlinging { .. }
+                );
+
+                state.interaction = lift_touch(
+                    state.interaction,
+                    *id,
+                    *position,
+                    Instant::now(),
+                    self.direction,
+                );
+
+                if !was_flinging
+                    && matches!(
+                        state.interaction,
+                        Interaction::TouchFlinging { .. }
+                    )
+                {
+                    shell.request_redraw();
+                }
+            }
+            Event::Touch(touch::Event::FingerLost { id, .. }) => {
+                // FingerLost is cancellation, so it must never launch a fling.
+                state.interaction = cancel_touch(state.interaction, *id);
+            }
+            _ => {}
+        }
+
+        if withhold_touch_from_content {
+            shell.capture_event();
+        }
+
         let mut update = || {
+            if withhold_touch_from_content {
+                return;
+            }
+
             if let Some(scroller_grabbed_at) = state.y_scroller_grabbed_at() {
                 match event {
                     Event::Mouse(mouse::Event::CursorMoved { .. })
@@ -874,16 +1069,35 @@ where
             if matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                    | Event::Touch(
-                        touch::Event::FingerLifted { .. }
-                            | touch::Event::FingerLost { .. }
-                    )
-            ) {
+            ) || (matches!(
+                event,
+                Event::Touch(
+                    touch::Event::FingerLifted { .. }
+                        | touch::Event::FingerLost { .. }
+                )
+            ) && state.scrollers_grabbed())
+            {
                 state.interaction = Interaction::None;
                 return;
             }
 
+            if matches!(event, Event::Mouse(mouse::Event::WheelScrolled { .. }))
+                && matches!(
+                    state.interaction,
+                    Interaction::TouchFlinging { .. }
+                )
+            {
+                state.interaction = Interaction::None;
+            }
+
             if shell.is_event_captured() {
+                if let Event::Touch(touch::Event::FingerMoved { id, .. }) =
+                    event
+                {
+                    state.interaction =
+                        cancel_pending_touch(state.interaction, *id);
+                }
+
                 return;
             }
 
@@ -960,63 +1174,6 @@ where
                     shell.invalidate_layout();
                     shell.request_redraw();
                 }
-                Event::Touch(event)
-                    if matches!(
-                        state.interaction,
-                        Interaction::TouchScrolling(_)
-                    ) || (!mouse_over_y_scrollbar
-                        && !mouse_over_x_scrollbar) =>
-                {
-                    match event {
-                        touch::Event::FingerPressed { .. } => {
-                            let Some(position) = cursor_over_scrollable else {
-                                return;
-                            };
-
-                            state.interaction =
-                                Interaction::TouchScrolling(position);
-                        }
-                        touch::Event::FingerMoved { .. } => {
-                            let Interaction::TouchScrolling(
-                                scroll_box_touched_at,
-                            ) = state.interaction
-                            else {
-                                return;
-                            };
-
-                            let Some(cursor_position) = cursor.position()
-                            else {
-                                return;
-                            };
-
-                            let delta = Vector::new(
-                                scroll_box_touched_at.x - cursor_position.x,
-                                scroll_box_touched_at.y - cursor_position.y,
-                            );
-
-                            state.scroll(
-                                self.direction.align(delta),
-                                bounds,
-                                content_bounds,
-                            );
-
-                            state.interaction =
-                                Interaction::TouchScrolling(cursor_position);
-
-                            // TODO: bubble up touch movements if not consumed.
-                            let _ = notify_scroll(
-                                state,
-                                &self.on_scroll,
-                                bounds,
-                                content_bounds,
-                                shell,
-                            );
-                        }
-                        _ => {}
-                    }
-
-                    shell.capture_event();
-                }
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     if let Interaction::AutoScrolling {
                         origin,
@@ -1046,6 +1203,76 @@ where
                     state.keyboard_modifiers = *modifiers;
                 }
                 Event::Window(window::Event::RedrawRequested(now)) => {
+                    if let Interaction::TouchFlinging {
+                        id,
+                        velocity,
+                        last_frame,
+                        layout_units_per_dip,
+                    } = state.interaction
+                    {
+                        if last_frame == Some(*now) {
+                            shell.request_redraw();
+                            return;
+                        }
+
+                        let elapsed = last_frame
+                            .map_or(Duration::ZERO, |last_frame| {
+                                *now - last_frame
+                            });
+
+                        let Some((delta, velocity)) =
+                            fling_step(velocity, elapsed, layout_units_per_dip)
+                        else {
+                            state.interaction = Interaction::None;
+                            return;
+                        };
+
+                        state.scroll(delta, bounds, content_bounds);
+
+                        let after = AbsoluteOffset {
+                            x: state
+                                .offset_x
+                                .absolute(bounds.width, content_bounds.width),
+                            y: state
+                                .offset_y
+                                .absolute(bounds.height, content_bounds.height),
+                        };
+
+                        let max_x =
+                            (content_bounds.width - bounds.width).max(0.0);
+                        let max_y =
+                            (content_bounds.height - bounds.height).max(0.0);
+
+                        let _ = notify_scroll(
+                            state,
+                            &self.on_scroll,
+                            bounds,
+                            content_bounds,
+                            shell,
+                        );
+
+                        if let Some(velocity) = fling_velocity_after_bounds(
+                            velocity,
+                            delta,
+                            after,
+                            AbsoluteOffset { x: max_x, y: max_y },
+                            layout_units_per_dip,
+                        ) {
+                            state.interaction = Interaction::TouchFlinging {
+                                id,
+                                velocity,
+                                last_frame: Some(*now),
+                                layout_units_per_dip,
+                            };
+
+                            shell.request_redraw();
+                        } else {
+                            state.interaction = Interaction::None;
+                        }
+
+                        return;
+                    }
+
                     if let Interaction::AutoScrolling {
                         origin,
                         current,
@@ -1701,12 +1928,280 @@ enum Interaction {
     None,
     YScrollerGrabbed(f32),
     XScrollerGrabbed(f32),
-    TouchScrolling(Point),
+    TouchPending {
+        id: touch::Finger,
+        origin: Point,
+        layout_units_per_dip: f32,
+    },
+    TouchScrolling {
+        id: touch::Finger,
+        last_position: Point,
+        samples: VelocitySamples,
+        layout_units_per_dip: f32,
+    },
+    TouchFlinging {
+        id: touch::Finger,
+        velocity: Vector,
+        last_frame: Option<Instant>,
+        layout_units_per_dip: f32,
+    },
     AutoScrolling {
         origin: Point,
         current: Point,
         last_frame: Option<Instant>,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VelocitySample {
+    time: Instant,
+    position: Point,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VelocitySamples {
+    samples: [VelocitySample; VELOCITY_SAMPLES],
+    len: usize,
+}
+
+impl VelocitySamples {
+    fn new(time: Instant, position: Point) -> Self {
+        Self {
+            samples: [VelocitySample { time, position }; VELOCITY_SAMPLES],
+            len: 1,
+        }
+    }
+
+    fn push(&mut self, time: Instant, position: Point) {
+        let cutoff = time.checked_sub(VELOCITY_WINDOW).unwrap_or(time);
+        let first_surviving = self.samples[..self.len]
+            .iter()
+            .position(|sample| sample.time >= cutoff)
+            .unwrap_or(self.len);
+
+        if first_surviving > 0 {
+            self.samples.copy_within(first_surviving..self.len, 0);
+            self.len -= first_surviving;
+        }
+
+        let sample = VelocitySample { time, position };
+
+        if self.len < VELOCITY_SAMPLES {
+            self.samples[self.len] = sample;
+            self.len += 1;
+        } else {
+            self.samples.copy_within(1.., 0);
+            self.samples[VELOCITY_SAMPLES - 1] = sample;
+        }
+    }
+
+    fn as_slice(&self) -> &[VelocitySample] {
+        &self.samples[..self.len]
+    }
+}
+
+fn velocity(
+    samples: &[VelocitySample],
+    now: Instant,
+    layout_units_per_dip: f32,
+) -> Option<Vector> {
+    let cutoff = now.checked_sub(VELOCITY_WINDOW).unwrap_or(now);
+    let mut samples = samples
+        .iter()
+        .filter(|sample| sample.time >= cutoff && sample.time <= now);
+    let first = samples.next()?;
+    let last = samples.last().unwrap_or(first);
+    let duration = last.time.checked_duration_since(first.time)?;
+
+    // Timestamps from a batched event-loop turn are too close to be meaningful.
+    if duration < VELOCITY_MIN_DURATION {
+        return None;
+    }
+
+    let velocity = (last.position - first.position) / duration.as_secs_f32();
+    let speed = speed(velocity);
+
+    let maximum = FLING_MAX_VELOCITY * layout_units_per_dip;
+
+    Some(if speed > maximum {
+        velocity * (maximum / speed)
+    } else {
+        velocity
+    })
+}
+
+fn speed(velocity: Vector) -> f32 {
+    velocity.x.hypot(velocity.y)
+}
+
+fn touch_delta(direction: Direction, delta: Vector) -> Vector {
+    let delta = direction.align(delta);
+
+    Vector::new(
+        if direction.horizontal().is_some() {
+            delta.x
+        } else {
+            0.0
+        },
+        if direction.vertical().is_some() {
+            delta.y
+        } else {
+            0.0
+        },
+    )
+}
+
+fn starts_touch_scroll(
+    direction: Direction,
+    origin: Point,
+    position: Point,
+    layout_units_per_dip: f32,
+    bounds: Rectangle,
+    content_bounds: Rectangle,
+) -> bool {
+    let travel = position - origin;
+
+    (direction.horizontal().is_some()
+        && content_bounds.width > bounds.width
+        && travel.x.abs() > TOUCH_SLOP * layout_units_per_dip)
+        || (direction.vertical().is_some()
+            && content_bounds.height > bounds.height
+            && travel.y.abs() > TOUCH_SLOP * layout_units_per_dip)
+}
+
+fn can_start_touch(interaction: Interaction) -> bool {
+    matches!(
+        interaction,
+        Interaction::None | Interaction::TouchFlinging { .. }
+    )
+}
+
+fn start_fling(
+    id: touch::Finger,
+    velocity: Vector,
+    last_frame: Instant,
+    layout_units_per_dip: f32,
+) -> Interaction {
+    if speed(velocity) > FLING_MIN_VELOCITY * layout_units_per_dip {
+        Interaction::TouchFlinging {
+            id,
+            velocity,
+            last_frame: Some(last_frame),
+            layout_units_per_dip,
+        }
+    } else {
+        Interaction::None
+    }
+}
+
+fn lift_touch(
+    interaction: Interaction,
+    id: touch::Finger,
+    position: Point,
+    now: Instant,
+    direction: Direction,
+) -> Interaction {
+    match interaction {
+        Interaction::TouchPending { id: active, .. } if active == id => {
+            Interaction::None
+        }
+        Interaction::TouchScrolling {
+            id: active,
+            mut samples,
+            layout_units_per_dip,
+            ..
+        } if active == id => {
+            samples.push(now, position);
+
+            let velocity =
+                velocity(samples.as_slice(), now, layout_units_per_dip)
+                    .map(|velocity| touch_delta(direction, -velocity))
+                    .unwrap_or(Vector::ZERO);
+
+            start_fling(id, velocity, now, layout_units_per_dip)
+        }
+        interaction => interaction,
+    }
+}
+
+fn cancel_pending_touch(
+    interaction: Interaction,
+    id: touch::Finger,
+) -> Interaction {
+    match interaction {
+        Interaction::TouchPending { id: active, .. } if active == id => {
+            Interaction::None
+        }
+        interaction => interaction,
+    }
+}
+
+fn cancel_touch(interaction: Interaction, id: touch::Finger) -> Interaction {
+    match interaction {
+        Interaction::TouchPending { id: active, .. }
+        | Interaction::TouchScrolling { id: active, .. }
+        | Interaction::TouchFlinging { id: active, .. }
+            if active == id =>
+        {
+            Interaction::None
+        }
+        interaction => interaction,
+    }
+}
+
+fn owns_scrolling_touch(interaction: Interaction, id: touch::Finger) -> bool {
+    matches!(
+        interaction,
+        Interaction::TouchScrolling { id: active, .. } if active == id
+    )
+}
+
+fn fling_step(
+    velocity: Vector,
+    elapsed: Duration,
+    layout_units_per_dip: f32,
+) -> Option<(Vector, Vector)> {
+    // A long redraw gap means the fling was dormant in an inactive subtree.
+    if elapsed > FLING_STALE_FRAME {
+        return None;
+    }
+
+    let elapsed = elapsed.min(FLING_MAX_FRAME);
+    let elapsed_seconds = elapsed.as_secs_f32();
+    let decay = (-elapsed_seconds / FLING_DECAY.as_secs_f32()).exp();
+    let velocity = velocity * decay;
+
+    if speed(velocity) < FLING_MIN_VELOCITY * layout_units_per_dip {
+        None
+    } else {
+        Some((velocity * elapsed_seconds, velocity))
+    }
+}
+
+fn fling_velocity_after_bounds(
+    mut velocity: Vector,
+    delta: Vector,
+    offset: AbsoluteOffset,
+    maximum: AbsoluteOffset,
+    layout_units_per_dip: f32,
+) -> Option<Vector> {
+    if (delta.x < 0.0 && offset.x <= 0.0)
+        || (delta.x > 0.0 && offset.x >= maximum.x)
+    {
+        velocity.x = 0.0;
+    }
+
+    if (delta.y < 0.0 && offset.y <= 0.0)
+        || (delta.y > 0.0 && offset.y >= maximum.y)
+    {
+        velocity.y = 0.0;
+    }
+
+    if speed(velocity) < FLING_MIN_VELOCITY * layout_units_per_dip {
+        None
+    } else {
+        Some(velocity)
+    }
 }
 
 impl Default for State {
@@ -2483,5 +2978,239 @@ pub fn default(theme: &Theme, status: Status) -> Style {
                 auto_scroll,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn velocity_ignores_samples_outside_window() {
+        let start = Instant::now();
+        let now = start + Duration::from_millis(200);
+        let samples = [
+            VelocitySample {
+                time: start,
+                position: Point::new(1000.0, 0.0),
+            },
+            VelocitySample {
+                time: start + Duration::from_millis(120),
+                position: Point::new(0.0, 0.0),
+            },
+            VelocitySample {
+                time: start + Duration::from_millis(180),
+                position: Point::new(60.0, 0.0),
+            },
+        ];
+
+        let velocity = velocity(&samples, now, 1.0).expect("velocity");
+
+        assert!((velocity.x - 1000.0).abs() < f32::EPSILON);
+        assert_eq!(velocity.y, 0.0);
+    }
+
+    #[test]
+    fn single_velocity_sample_has_no_velocity() {
+        let start = Instant::now();
+        let now = start + Duration::from_millis(200);
+        let samples = [
+            VelocitySample {
+                time: start,
+                position: Point::new(0.0, 0.0),
+            },
+            VelocitySample {
+                time: start + Duration::from_millis(180),
+                position: Point::new(60.0, 0.0),
+            },
+        ];
+
+        assert!(velocity(&samples, now, 1.0).is_none());
+    }
+
+    #[test]
+    fn short_velocity_window_has_no_velocity() {
+        let start = Instant::now();
+        let now = start + VELOCITY_MIN_DURATION - Duration::from_millis(1);
+        let samples = [
+            VelocitySample {
+                time: start,
+                position: Point::ORIGIN,
+            },
+            VelocitySample {
+                time: now,
+                position: Point::new(100.0, 0.0),
+            },
+        ];
+
+        assert!(velocity(&samples, now, 1.0).is_none());
+    }
+
+    #[test]
+    fn slow_velocity_does_not_start_fling() {
+        assert!(matches!(
+            start_fling(
+                touch::Finger(1),
+                Vector::new(FLING_MIN_VELOCITY - 1.0, 0.0),
+                Instant::now(),
+                1.0,
+            ),
+            Interaction::None
+        ));
+    }
+
+    #[test]
+    fn fling_decay_reaches_rest_without_reversing() {
+        let mut velocity = Vector::new(1200.0, -600.0);
+        let mut reached_rest = false;
+
+        for _ in 0..1000 {
+            let Some((delta, next_velocity)) =
+                fling_step(velocity, Duration::from_millis(16), 1.0)
+            else {
+                reached_rest = true;
+                break;
+            };
+
+            assert!(delta.x >= 0.0);
+            assert!(delta.y <= 0.0);
+            assert!(next_velocity.x >= 0.0);
+            assert!(next_velocity.y <= 0.0);
+            assert!(speed(next_velocity) < speed(velocity));
+
+            velocity = next_velocity;
+        }
+
+        assert!(reached_rest);
+    }
+
+    #[test]
+    fn fling_ends_after_long_gap() {
+        assert!(
+            fling_step(
+                Vector::new(1200.0, 0.0),
+                FLING_STALE_FRAME + Duration::from_millis(1),
+                1.0,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn fling_keeps_unclamped_axis_moving() {
+        let (delta, velocity) = fling_step(
+            Vector::new(1200.0, 600.0),
+            Duration::from_millis(16),
+            1.0,
+        )
+        .expect("fling step");
+
+        let velocity = fling_velocity_after_bounds(
+            velocity,
+            delta,
+            AbsoluteOffset { x: 100.0, y: 50.0 },
+            AbsoluteOffset { x: 100.0, y: 200.0 },
+            1.0,
+        )
+        .expect("remaining velocity");
+
+        assert_eq!(velocity.x, 0.0);
+        assert!(velocity.y > 0.0);
+    }
+
+    #[test]
+    fn cancellation_does_not_start_fling() {
+        let id = touch::Finger(1);
+        let start = Instant::now();
+        let mut samples = VelocitySamples::new(start, Point::ORIGIN);
+
+        samples.push(start + Duration::from_millis(10), Point::new(100.0, 0.0));
+
+        let interaction = Interaction::TouchScrolling {
+            id,
+            last_position: Point::new(100.0, 0.0),
+            samples,
+            layout_units_per_dip: 1.0,
+        };
+
+        assert!(matches!(cancel_touch(interaction, id), Interaction::None));
+    }
+
+    #[test]
+    fn recycled_finger_lift_reaches_content_during_fling() {
+        let id = touch::Finger(0);
+        let mut interaction = Interaction::TouchFlinging {
+            id,
+            velocity: Vector::new(0.0, 100.0),
+            last_frame: Some(Instant::now()),
+            layout_units_per_dip: 1.0,
+        };
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0));
+        let cursor = mouse::Cursor::Available(Point::new(120.0, 20.0));
+
+        if cursor.position_over(bounds).is_some()
+            && can_start_touch(interaction)
+        {
+            interaction = Interaction::TouchPending {
+                id,
+                origin: Point::new(120.0, 20.0),
+                layout_units_per_dip: 1.0,
+            };
+        }
+
+        assert!(matches!(interaction, Interaction::TouchFlinging { .. }));
+        assert!(!owns_scrolling_touch(interaction, id));
+    }
+
+    #[test]
+    fn active_scroll_ignores_second_finger() {
+        let interaction = Interaction::TouchScrolling {
+            id: touch::Finger(1),
+            last_position: Point::ORIGIN,
+            samples: VelocitySamples::new(Instant::now(), Point::ORIGIN),
+            layout_units_per_dip: 1.0,
+        };
+
+        assert!(!can_start_touch(interaction));
+    }
+
+    #[test]
+    fn descendant_capture_cancels_ancestor_pending_touch() {
+        let id = touch::Finger(1);
+        let interaction = Interaction::TouchPending {
+            id,
+            origin: Point::ORIGIN,
+            layout_units_per_dip: 1.0,
+        };
+
+        assert!(matches!(
+            cancel_pending_touch(interaction, id),
+            Interaction::None
+        ));
+    }
+
+    #[test]
+    fn touch_slop_is_scaled_from_device_independent_pixels() {
+        let direction = Direction::Vertical(Scrollbar::default());
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 100.0));
+        let content_bounds =
+            Rectangle::new(Point::ORIGIN, Size::new(100.0, 200.0));
+
+        assert!(!starts_touch_scroll(
+            direction,
+            Point::ORIGIN,
+            Point::new(0.0, 4.1),
+            1.0,
+            bounds,
+            content_bounds,
+        ));
+        assert!(starts_touch_scroll(
+            direction,
+            Point::ORIGIN,
+            Point::new(0.0, 4.1),
+            0.5,
+            bounds,
+            content_bounds,
+        ));
     }
 }

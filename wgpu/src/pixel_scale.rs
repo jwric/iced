@@ -369,7 +369,9 @@ impl BlitPipeline {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<CrtUniforms>() as u64,
+                        ),
                     },
                     count: None,
                 }],
@@ -577,6 +579,8 @@ struct CrtUniforms {
     vignette_strength: f32,
     brightness: f32,
     contrast: f32,
+    // Uniform bindings on downlevel/Web backends must be 16-byte aligned.
+    padding: vec2<f32>,
 }
 
 @vertex

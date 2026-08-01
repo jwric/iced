@@ -1066,6 +1066,32 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        // Firefox for Android may not surface visual viewport
+                        // changes through winit's canvas ResizeObserver. The
+                        // browser bridge wakes us with an inert keyboard event;
+                        // synchronize the actual rendered canvas bounds before
+                        // processing it so resize, relayout, and presentation
+                        // happen in the same event-loop turn.
+                        #[cfg(target_arch = "wasm32")]
+                        if !matches!(
+                            window_event,
+                            winit::event::WindowEvent::Resized(_)
+                                | winit::event::WindowEvent::ScaleFactorChanged {
+                                    ..
+                                }
+                        ) && window
+                            .state
+                            .synchronize_web_viewport(&window.raw)
+                        {
+                            window.raw.request_redraw();
+                            events.push((
+                                id,
+                                core::Event::Window(window::Event::Resized(
+                                    window.state.logical_size(),
+                                )),
+                            ));
+                        }
+
                         match window_event {
                             winit::event::WindowEvent::Resized(_) => {
                                 window.raw.request_redraw();
@@ -1189,6 +1215,16 @@ async fn run_instance<P>(
                                     &mut clipboard,
                                     &mut messages,
                                 );
+
+                            // The batch that carried a touch release has now
+                            // been seen, so the position it left behind can go.
+                            // The redraw is what lets widgets holding their own
+                            // hover flag notice.
+                            if window.state.release_touch_cursor() {
+                                window.request_redraw(
+                                    window::RedrawRequest::NextFrame,
+                                );
+                            }
 
                             #[cfg(feature = "unconditional-rendering")]
                             window.request_redraw(

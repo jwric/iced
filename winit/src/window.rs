@@ -223,9 +223,10 @@ where
             InputMethod::Enabled {
                 cursor,
                 purpose,
+                action,
                 preedit,
             } => {
-                self.enable_ime(cursor, purpose);
+                self.enable_ime(cursor, purpose, action);
 
                 if let Some(preedit) = preedit {
                     if preedit.content.is_empty() {
@@ -284,6 +285,7 @@ where
         &mut self,
         cursor: Rectangle,
         purpose: input_method::Purpose,
+        _action: input_method::Action,
     ) {
         if self.ime_state.is_none() {
             self.raw.set_ime_allowed(true);

@@ -6,7 +6,11 @@ use crate::Point;
 #[allow(missing_docs)]
 pub enum Event {
     /// A touch interaction was started.
-    FingerPressed { id: Finger, position: Point },
+    FingerPressed {
+        id: Finger,
+        position: Point,
+        layout_units_per_dip: f32,
+    },
 
     /// An on-going touch interaction was moved.
     FingerMoved { id: Finger, position: Point },
