@@ -762,6 +762,49 @@ async fn run_instance<P>(
                             &mut system_theme,
                         );
                         actions += 1;
+
+                        if !messages.is_empty() {
+                            let cached_interfaces: FxHashMap<_, _> =
+                                ManuallyDrop::into_inner(user_interfaces)
+                                    .into_iter()
+                                    .map(|(id, ui)| (id, ui.into_cache()))
+                                    .collect();
+
+                            let next_actions = update(
+                                &mut program,
+                                &mut runtime,
+                                &mut messages,
+                            );
+
+                            user_interfaces =
+                                ManuallyDrop::new(build_user_interfaces(
+                                    &program,
+                                    &mut window_manager,
+                                    cached_interfaces,
+                                ));
+
+                            for action in next_actions {
+                                run_action(
+                                    action,
+                                    &program,
+                                    &mut runtime,
+                                    &mut compositor,
+                                    &mut events,
+                                    &mut messages,
+                                    &mut clipboard,
+                                    &mut control_sender,
+                                    &mut user_interfaces,
+                                    &mut window_manager,
+                                    &mut ui_caches,
+                                    &mut is_window_opening,
+                                    &mut system_theme,
+                                );
+                            }
+
+                            for (_id, window) in window_manager.iter_mut() {
+                                window.raw.request_redraw();
+                            }
+                        }
                     }
                     event::Event::WindowEvent {
                         window_id: id,
