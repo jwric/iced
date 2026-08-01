@@ -567,10 +567,10 @@ where
     Stack::with_children(children)
 }
 
-/// Wraps the given widget and captures any mouse button presses inside the bounds of
-/// the widget—effectively making it _opaque_.
+/// Wraps the given widget and captures pointer presses and touch endings inside the
+/// bounds of the widget, effectively making it _opaque_.
 ///
-/// This helper is meant to be used to mark elements in a [`Stack`] to avoid mouse
+/// This helper is meant to be used to mark elements in a [`Stack`] to avoid pointer
 /// events from passing through layers.
 ///
 /// [`Stack`]: crate::Stack
@@ -585,6 +585,7 @@ where
     use crate::core::layout::{self, Layout};
     use crate::core::mouse;
     use crate::core::renderer;
+    use crate::core::touch;
     use crate::core::widget::tree::{self, Tree};
     use crate::core::{Event, Rectangle, Shell, Size};
 
@@ -668,17 +669,24 @@ where
             shell: &mut Shell<'_, Message>,
             viewport: &Rectangle,
         ) {
-            let is_mouse_press = matches!(
-                event,
-                core::Event::Mouse(mouse::Event::ButtonPressed(_))
-            );
+            let captures_event = match event {
+                core::Event::Mouse(mouse::Event::ButtonPressed(_)) => {
+                    cursor.is_over(layout.bounds())
+                }
+                core::Event::Touch(
+                    touch::Event::FingerPressed { position, .. }
+                    | touch::Event::FingerLifted { position, .. }
+                    | touch::Event::FingerLost { position, .. },
+                ) => layout.bounds().contains(*position),
+                _ => false,
+            };
 
             self.content.as_widget_mut().update(
                 tree, event, layout, cursor, renderer, clipboard, shell,
                 viewport,
             );
 
-            if is_mouse_press && cursor.is_over(layout.bounds()) {
+            if captures_event {
                 shell.capture_event();
             }
         }
@@ -727,6 +735,77 @@ where
     Element::new(Opaque {
         content: content.into(),
     })
+}
+
+#[cfg(test)]
+mod opaque_tests {
+    use super::*;
+    use crate::core::widget::Tree;
+    use crate::core::{Event, Layout, Point, clipboard, layout, mouse, touch};
+
+    fn is_captured(event: Event, cursor: mouse::Cursor) -> bool {
+        let mut element: Element<'_, (), (), ()> = opaque(
+            Space::new()
+                .width(Length::Fixed(100.0))
+                .height(Length::Fixed(100.0)),
+        );
+        let mut tree = Tree::new(element.as_widget());
+        let renderer = ();
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(100.0, 100.0)),
+        );
+        let mut clipboard = clipboard::Null;
+        let mut messages = Vec::new();
+        let mut shell = core::Shell::new(&mut messages);
+
+        element.as_widget_mut().update(
+            &mut tree,
+            &event,
+            Layout::new(&node),
+            cursor,
+            &renderer,
+            &mut clipboard,
+            &mut shell,
+            &core::Rectangle::with_size(Size::new(100.0, 100.0)),
+        );
+
+        shell.is_event_captured()
+    }
+
+    #[test]
+    fn opaque_captures_touch_endpoints_inside_its_bounds() {
+        let id = touch::Finger(0);
+        let position = Point::new(50.0, 50.0);
+
+        for event in [
+            touch::Event::FingerPressed {
+                id,
+                position,
+                layout_units_per_dip: 1.0,
+            },
+            touch::Event::FingerLifted { id, position },
+            touch::Event::FingerLost { id, position },
+        ] {
+            assert!(is_captured(
+                Event::Touch(event),
+                mouse::Cursor::Unavailable
+            ));
+        }
+    }
+
+    #[test]
+    fn opaque_leaves_touch_endpoints_outside_its_bounds_uncaptured() {
+        assert!(!is_captured(
+            Event::Touch(touch::Event::FingerPressed {
+                id: touch::Finger(0),
+                position: Point::new(150.0, 50.0),
+                layout_units_per_dip: 1.0,
+            }),
+            mouse::Cursor::Unavailable,
+        ));
+    }
 }
 
 /// Displays a widget on top of another one, only when the base widget is hovered.
