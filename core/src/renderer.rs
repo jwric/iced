@@ -47,11 +47,24 @@ pub trait Renderer {
     }
 
     /// Applies a translation to the primitives recorded in the given closure.
+    ///
+    /// With crisp edges the translation lands on whole pixels. Every primitive
+    /// under a fractional translation rounds to the pixel grid on its own, and
+    /// a glyph sitting at a different fraction than the box behind it crosses
+    /// that threshold at a different point in the travel, so the two drift
+    /// apart by a pixel as it moves. A whole translation keeps everything it
+    /// carries in the relation it was laid out with.
     fn with_translation(
         &mut self,
         translation: Vector,
         f: impl FnOnce(&mut Self),
     ) {
+        let translation = if cfg!(feature = "crisp") {
+            Vector::new(translation.x.round(), translation.y.round())
+        } else {
+            translation
+        };
+
         self.with_transformation(
             Transformation::translate(translation.x, translation.y),
             f,
