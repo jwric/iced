@@ -2587,6 +2587,7 @@ dependencies = [
  "sysinfo",
  "thiserror 2.0.17",
  "tracing",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "window_clipboard",

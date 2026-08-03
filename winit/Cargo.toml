@@ -39,12 +39,19 @@ sysinfo.optional = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys.workspace = true
 web-sys.features = [
+    "Clipboard",
     "Document",
     "DomRect",
     "Element",
     "HtmlCanvasElement",
+    "HtmlDocument",
+    "HtmlElement",
+    "HtmlTextAreaElement",
+    "Navigator",
+    "Node",
     "Window",
 ]
+wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
