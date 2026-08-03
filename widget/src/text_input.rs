@@ -993,6 +993,17 @@ where
                             update_cache(state, &self.value);
                             return;
                         }
+                        // The browser delivers a paste as an input method
+                        // commit of its own, so acting here would insert the
+                        // text twice.
+                        #[cfg(target_arch = "wasm32")]
+                        Some('v')
+                            if state.keyboard_modifiers.command()
+                                && !state.keyboard_modifiers.alt() =>
+                        {
+                            return;
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
                         Some('v')
                             if state.keyboard_modifiers.command()
                                 && !state.keyboard_modifiers.alt() =>
@@ -1332,9 +1343,17 @@ where
                             return;
                         };
 
+                        // A single line input never holds control characters,
+                        // whichever route the text arrived by. The clipboard
+                        // shortcut filters them too.
+                        let committed: String = text
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .collect();
+
                         let mut editor =
                             Editor::new(&mut self.value, &mut state.cursor);
-                        editor.paste(Value::new(text));
+                        editor.paste(Value::new(&committed));
 
                         focus.updated_at = Instant::now();
                         state.is_pasting = None;

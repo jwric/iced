@@ -882,6 +882,12 @@ where
                                     publish(Action::Edit(Edit::Delete));
                                 }
                             }
+                            // The browser delivers a paste as an input method
+                            // commit of its own, so acting here would insert
+                            // the text twice.
+                            #[cfg(target_arch = "wasm32")]
+                            Binding::Paste => {}
+                            #[cfg(not(target_arch = "wasm32"))]
                             Binding::Paste => {
                                 if let Some(contents) =
                                     clipboard.read(clipboard::Kind::Standard)
