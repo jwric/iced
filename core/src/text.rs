@@ -391,6 +391,9 @@ pub struct Span<'a, Link = (), Font = crate::Font> {
     pub link: Option<Link>,
     /// The [`Highlight`] of the [`Span`].
     pub highlight: Option<Highlight>,
+    /// The [`Highlight`] drawn instead of `highlight` while the [`Span`]'s
+    /// link is hovered.
+    pub hover_highlight: Option<Highlight>,
     /// The [`Padding`] of the [`Span`].
     ///
     /// Currently, it only affects the bounds of the [`Highlight`].
@@ -496,6 +499,25 @@ impl<'a, Link, Font> Span<'a, Link, Font> {
         self
     }
 
+    /// Sets the [`Background`] drawn instead of the [`Span`]'s own while its
+    /// link is hovered, keeping the border of [`background`] if one is set.
+    ///
+    /// [`background`]: Self::background
+    pub fn hover_background(
+        mut self,
+        background: impl Into<Background>,
+    ) -> Self {
+        let border = self
+            .highlight
+            .map(|highlight| highlight.border)
+            .unwrap_or_default();
+        self.hover_highlight = Some(Highlight {
+            background: background.into(),
+            border,
+        });
+        self
+    }
+
     /// Sets the [`Border`] of the [`Span`].
     pub fn border(self, border: impl Into<Border>) -> Self {
         self.border_maybe(Some(border))
@@ -556,6 +578,7 @@ impl<'a, Link, Font> Span<'a, Link, Font> {
             color: self.color,
             link: self.link,
             highlight: self.highlight,
+            hover_highlight: self.hover_highlight,
             padding: self.padding,
             underline: self.underline,
             strikethrough: self.strikethrough,
@@ -573,6 +596,7 @@ impl<Link, Font> Default for Span<'_, Link, Font> {
             color: None,
             link: None,
             highlight: None,
+            hover_highlight: None,
             padding: Padding::default(),
             underline: false,
             strikethrough: false,

@@ -274,15 +274,25 @@ where
             let is_hovered_link = self.on_link_click.is_some()
                 && Some(index) == self.hovered_link;
 
-            if span.highlight.is_some()
+            // A span with its own hover highlight swaps backgrounds instead
+            // of gaining the link underline.
+            let highlight = if is_hovered_link {
+                span.hover_highlight.or(span.highlight)
+            } else {
+                span.highlight
+            };
+            let hover_underline =
+                is_hovered_link && span.hover_highlight.is_none();
+
+            if highlight.is_some()
                 || span.underline
                 || span.strikethrough
-                || is_hovered_link
+                || hover_underline
             {
                 let translation = layout.position() - Point::ORIGIN;
                 let regions = state.paragraph.span_bounds(index);
 
-                if let Some(highlight) = span.highlight {
+                if let Some(highlight) = highlight {
                     for bounds in &regions {
                         let bounds = Rectangle::new(
                             bounds.position()
@@ -305,7 +315,7 @@ where
                     }
                 }
 
-                if span.underline || span.strikethrough || is_hovered_link {
+                if span.underline || span.strikethrough || hover_underline {
                     let size = span
                         .size
                         .or(self.size)
@@ -327,7 +337,7 @@ where
                             size.0 + (line_height.0 - size.0) / 2.0,
                         );
 
-                    if span.underline || is_hovered_link {
+                    if span.underline || hover_underline {
                         for bounds in &regions {
                             renderer.fill_quad(
                                 renderer::Quad {
