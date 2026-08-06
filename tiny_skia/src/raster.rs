@@ -57,7 +57,16 @@ impl Pipeline {
         let width_scale = bounds.width / image.width() as f32;
         let height_scale = bounds.height / image.height() as f32;
 
-        let transform = transform.pre_scale(width_scale, height_scale);
+        // `draw_pixmap` only takes an __integer__ offset, and applies it
+        // _before_ the transform. Passing the position there would therefore
+        // quantize it to multiples of the scale of the image—shifting, say, a
+        // sprite drawn at 4x by up to 4 pixels, and by a different amount
+        // depending on where it happens to land.
+        //
+        // Carrying the position in the transform instead keeps it exact.
+        let transform = transform
+            .pre_translate(bounds.x, bounds.y)
+            .pre_scale(width_scale, height_scale);
 
         let quality = match filter_method {
             raster::FilterMethod::Linear => tiny_skia::FilterQuality::Bilinear,
@@ -65,8 +74,8 @@ impl Pipeline {
         };
 
         pixels.draw_pixmap(
-            (bounds.x / width_scale) as i32,
-            (bounds.y / height_scale) as i32,
+            0,
+            0,
             image,
             &tiny_skia::PixmapPaint {
                 quality,
@@ -157,4 +166,119 @@ struct Entry {
     width: u32,
     height: u32,
     pixels: Vec<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::core::Point;
+
+    /// Draws a 2x2 image into a 16x16 pixmap and returns, for every pixel, the
+    /// index of the source texel that ended up there—or `None` where nothing
+    /// was drawn.
+    fn draw(bounds: Rectangle) -> Vec<Option<usize>> {
+        const COLORS: [[u8; 4]; 4] = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+
+        let handle = raster::Handle::from_rgba(
+            2,
+            2,
+            COLORS.into_iter().flatten().collect::<Vec<u8>>(),
+        );
+
+        let mut pipeline = Pipeline::new();
+        let mut pixmap =
+            tiny_skia::Pixmap::new(16, 16).expect("Create test pixmap");
+
+        pipeline.draw(
+            &handle,
+            raster::FilterMethod::Nearest,
+            bounds,
+            1.0,
+            &mut pixmap.as_mut(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+
+        // The cache stores pixels as BGRA premultiplied, so match on that
+        let expected: Vec<u32> = COLORS
+            .into_iter()
+            .map(|[r, g, b, a]| {
+                bytemuck::cast(
+                    tiny_skia::ColorU8::from_rgba(b, g, r, a).premultiply(),
+                )
+            })
+            .collect();
+
+        bytemuck::cast_slice::<u8, u32>(pixmap.data())
+            .iter()
+            .map(|pixel| expected.iter().position(|color| color == pixel))
+            .collect()
+    }
+
+    #[test]
+    fn an_image_lands_exactly_on_its_bounds() {
+        // A 2x2 image blown up 4x, at a position that is not a multiple of
+        // that scale. `draw_pixmap` only takes an integer offset applied
+        // before the scale, so naively passing `bounds.x / width_scale` used
+        // to snap this to (4, 0) instead of (5, 3).
+        let drawn = draw(Rectangle {
+            x: 5.0,
+            y: 3.0,
+            width: 8.0,
+            height: 8.0,
+        });
+
+        for y in 0..16 {
+            for x in 0..16 {
+                let inside = (5..13).contains(&x) && (3..11).contains(&y);
+
+                let texel = inside
+                    .then(|| usize::from(y >= 7) * 2 + usize::from(x >= 9));
+
+                assert_eq!(
+                    drawn[y * 16 + x],
+                    texel,
+                    "at {x}, {y}: expected {texel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_image_at_the_origin_is_unaffected() {
+        // The old arithmetic happened to be correct here; make sure the fix
+        // did not move the easy case.
+        let drawn = draw(Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 8.0,
+        });
+
+        assert_eq!(drawn[0], Some(0));
+        assert_eq!(drawn[7], Some(1));
+        assert_eq!(drawn[4 * 16], Some(2));
+        assert_eq!(drawn[4 * 16 + 7], Some(3));
+
+        // ...and nothing spills past the far edge
+        assert_eq!(drawn[8], None);
+        assert_eq!(drawn[8 * 16], None);
+    }
+
+    #[test]
+    fn an_image_drawn_at_its_native_size_is_pixel_aligned() {
+        let drawn =
+            draw(Rectangle::new(Point::new(3.0, 9.0), Size::new(2.0, 2.0)));
+
+        assert_eq!(drawn[9 * 16 + 3], Some(0));
+        assert_eq!(drawn[9 * 16 + 4], Some(1));
+        assert_eq!(drawn[10 * 16 + 3], Some(2));
+        assert_eq!(drawn[10 * 16 + 4], Some(3));
+    }
 }

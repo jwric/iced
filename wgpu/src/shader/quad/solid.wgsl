@@ -76,16 +76,14 @@ fn solid_fs_main(
     ) / 2.0;
 
     if (input.border_width > 0.0) {
-        // Original (anti-aliased): clamp(0.5 + dist + input.border_width, 0.0, 1.0)
         mixed_color = mix(
             input.color,
             input.border_color,
-            select(0.0, 1.0, dist >= -input.border_width)
+            clamp(0.5 + dist + input.border_width, 0.0, 1.0)
         );
     }
 
-    // Original (anti-aliased): clamp(0.5-dist, 0.0, 1.0)
-    var quad_alpha: f32 = select(0.0, 1.0, dist < 0.0);
+    var quad_alpha: f32 = clamp(0.5-dist, 0.0, 1.0);
 
     let quad_color = mixed_color * quad_alpha;
 

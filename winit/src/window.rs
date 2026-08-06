@@ -198,10 +198,6 @@ where
         self.state.logical_size()
     }
 
-    pub fn scaled_logical_size(&self) -> Size {
-        self.state.scaled_physical_size()
-    }
-
     pub fn request_redraw(&mut self, redraw_request: RedrawRequest) {
         match redraw_request {
             RedrawRequest::NextFrame => {
@@ -285,6 +281,15 @@ where
         cursor: Rectangle,
         purpose: input_method::Purpose,
     ) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys;
+            self.raw.set_prevent_default(false);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        publish_web_ime(Some((purpose, cursor)), self.state.logical_size());
+
         if self.ime_state.is_none() {
             self.raw.set_ime_allowed(true);
         }
@@ -301,12 +306,58 @@ where
     }
 
     fn disable_ime(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys;
+            self.raw.set_prevent_default(true);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        publish_web_ime(None, self.state.logical_size());
+
         if self.ime_state.is_some() {
             self.raw.set_ime_allowed(false);
             self.ime_state = None;
         }
 
         self.preedit = None;
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_web_ime(
+    request: Option<(input_method::Purpose, Rectangle)>,
+    viewport: Size,
+) {
+    let Some(document) = web_sys::window().and_then(|window| window.document())
+    else {
+        return;
+    };
+
+    let Some(root) = document.document_element() else {
+        return;
+    };
+    let state = match request {
+        Some((input_method::Purpose::Secure, _)) => "secure",
+        Some((
+            input_method::Purpose::Normal | input_method::Purpose::Terminal,
+            _,
+        )) => "text",
+        None => "disabled",
+    };
+    let _ = root.set_attribute("data-iced-ime", state);
+    if let Some((_, cursor)) = request {
+        let values = [
+            ("data-iced-ime-x", cursor.x),
+            ("data-iced-ime-y", cursor.y),
+            ("data-iced-ime-width", cursor.width),
+            ("data-iced-ime-height", cursor.height),
+            ("data-iced-ime-viewport-width", viewport.width),
+            ("data-iced-ime-viewport-height", viewport.height),
+        ];
+        for (name, value) in values {
+            let _ = root.set_attribute(name, &value.to_string());
+        }
     }
 }
 

@@ -680,7 +680,7 @@ async fn run_instance<P>(
                     }
                 });
 
-                let logical_size = window.state.scaled_physical_size();
+                let logical_size = window.state.logical_size();
 
                 let _ = user_interfaces.insert(
                     id,
@@ -780,8 +780,7 @@ async fn run_instance<P>(
                         };
 
                         let physical_size = window.state.physical_size();
-                        let mut logical_size =
-                            window.state.scaled_physical_size();
+                        let mut logical_size = window.state.logical_size();
 
                         if physical_size.width == 0 || physical_size.height == 0
                         {
@@ -920,11 +919,8 @@ async fn run_instance<P>(
                                 window = window_manager.get_mut(id).unwrap();
 
                                 // Window scale factor changed during a redraw request
-                                if logical_size
-                                    != window.state.scaled_physical_size()
-                                {
-                                    logical_size =
-                                        window.state.scaled_physical_size();
+                                if logical_size != window.state.logical_size() {
+                                    logical_size = window.state.logical_size();
 
                                     log::debug!(
                                         "Window scale factor changed during a redraw request"
@@ -1066,6 +1062,43 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        // Firefox for Android may not surface visual viewport
+                        // changes through winit's canvas ResizeObserver. The
+                        // browser bridge wakes us with an inert keyboard event;
+                        // synchronize the actual rendered canvas bounds before
+                        // processing it so resize, relayout, and presentation
+                        // happen in the same event-loop turn.
+                        #[cfg(target_arch = "wasm32")]
+                        if !matches!(
+                            window_event,
+                            winit::event::WindowEvent::Resized(_)
+                                | winit::event::WindowEvent::ScaleFactorChanged {
+                                    ..
+                                }
+                        ) && window
+                            .state
+                            .synchronize_web_viewport(&window.raw)
+                        {
+                            window.raw.request_redraw();
+                            events.push((
+                                id,
+                                core::Event::Window(window::Event::Resized(
+                                    window.state.logical_size(),
+                                )),
+                            ));
+                        }
+
+                        // A browser soft-keyboard bridge owns DOM focus while
+                        // the canvas text field remains logically focused.
+                        #[cfg(target_arch = "wasm32")]
+                        if matches!(
+                            window_event,
+                            winit::event::WindowEvent::Focused(false)
+                        ) && web_mobile_keyboard_focused()
+                        {
+                            continue;
+                        }
+
                         match window_event {
                             winit::event::WindowEvent::Resized(_) => {
                                 window.raw.request_redraw();
@@ -1115,33 +1148,10 @@ async fn run_instance<P>(
                                 &window_event,
                             );
 
-                            // // Rebuild UI on resize or scale change to use new scaled_logical_size
-                            // if matches!(
-                            //     window_event,
-                            //     winit::event::WindowEvent::Resized(_)
-                            // ) {
-                            //     let size = window.state.scaled_physical_size();
-                            //     if let Some(ui) = user_interfaces.remove(&id) {
-                            //         let cache = ui.into_cache();
-                            //         let new_ui = build_user_interface(
-                            //             &program,
-                            //             cache,
-                            //             &mut window.renderer,
-                            //             Size::new(
-                            //                 size.width as f32,
-                            //                 size.height as f32,
-                            //             ),
-                            //             id,
-                            //         );
-                            //         let _ = user_interfaces.insert(id, new_ui);
-                            //     }
-                            // }
-
                             if let Some(event) = conversion::window_event(
                                 window_event,
                                 window.state.scale_factor(),
                                 window.state.modifiers(),
-                                window.state.pixel_scale(),
                             ) {
                                 events.push((id, event));
                             }
@@ -1816,7 +1826,7 @@ fn run_action<'a, P, C>(
                 };
 
                 let cache = ui.into_cache();
-                let size = window.scaled_logical_size();
+                let size = window.logical_size();
 
                 let _ = interfaces.insert(
                     id,
@@ -1871,12 +1881,20 @@ where
                     program,
                     cache,
                     &mut window.renderer,
-                    window.state.scaled_physical_size(),
+                    window.state.logical_size(),
                     id,
                 ),
             ))
         })
         .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_mobile_keyboard_focused() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.active_element())
+        .is_some_and(|element| element.id() == "mobile-keyboard")
 }
 
 /// Returns true if the provided event should cause a [`Program`] to

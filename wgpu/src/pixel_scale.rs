@@ -1,223 +1,135 @@
-//! Pixel scaling support for retro-style pixel art effects.
+//! Present a low resolution frame, pixel art-style.
 //!
-//! This module provides utilities for rendering to a downscaled intermediate
-//! texture and then upscaling it with nearest-neighbor filtering for a
-//! pixelated retro look.
-
+//! When a [`Viewport`] has a pixel scale greater than 1, the scene is rendered
+//! to an intermediate texture of [`Viewport::target_size`] and then upscaled
+//! with nearest-neighbor filtering; so that every virtual pixel ends up
+//! covering the exact same square of physical pixels.
+//!
+//! The same pass optionally applies [`CrtEffectSettings`], emulating the look
+//! of a CRT monitor.
+//!
+//! [`Viewport`]: crate::graphics::Viewport
+//! [`Viewport::target_size`]: crate::graphics::Viewport::target_size
+use crate::core::Size;
 use crate::graphics::Viewport;
-use wgpu::util::DeviceExt;
 
-// Re-export CrtEffectSettings from core for convenience
+use std::mem;
+
 pub use crate::core::CrtEffectSettings;
 
-/// Uniform buffer data for CRT effects shader.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct CrtUniforms {
-    scanline_intensity: f32,
-    screen_curvature: f32,
-    rgb_separation: f32,
-    vignette_strength: f32,
-    brightness: f32,
-    contrast: f32,
-    _padding: [f32; 2], // Align to 16 bytes
+/// The post-processing pass that upscales a low resolution frame.
+#[derive(Debug)]
+pub struct PixelScaler {
+    crt_effects: Option<CrtEffectSettings>,
+    target: Option<Target>,
+    pipeline: Option<Pipeline>,
 }
 
-impl From<crate::core::CrtEffectSettings> for CrtUniforms {
-    fn from(settings: crate::core::CrtEffectSettings) -> Self {
+impl PixelScaler {
+    /// Creates a new [`PixelScaler`] with the given CRT effects.
+    pub fn new(crt_effects: Option<CrtEffectSettings>) -> Self {
         Self {
-            scanline_intensity: settings.scanline_intensity,
-            screen_curvature: settings.screen_curvature,
-            rgb_separation: settings.rgb_separation,
-            vignette_strength: settings.vignette_strength,
-            brightness: settings.brightness,
-            contrast: settings.contrast,
-            _padding: [0.0; 2],
-        }
-    }
-}
-
-/// Manages pixel scaling state for a compositor.
-pub struct PixelScaleState {
-    /// The pixel scale mode.
-    pixel_scale_mode: crate::core::PixelScaleMode,
-    /// The intermediate texture for downscaled rendering.
-    intermediate_texture: Option<IntermediateTexture>,
-    /// The blit pipeline for upscaling.
-    blit_pipeline: Option<BlitPipeline>,
-    /// CRT effect settings. None means disabled.
-    pub crt_settings: Option<crate::core::CrtEffectSettings>,
-}
-
-struct IntermediateTexture {
-    #[allow(dead_code)]
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    width: u32,
-    height: u32,
-}
-
-struct BlitPipeline {
-    pipeline: wgpu::RenderPipeline,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
-    uniform_bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-}
-
-impl PixelScaleState {
-    /// Creates a new pixel scale state.
-    pub fn new(
-        pixel_scale_mode: crate::core::PixelScaleMode,
-        crt_settings: Option<crate::core::CrtEffectSettings>,
-    ) -> Self {
-        Self {
-            pixel_scale_mode,
-            intermediate_texture: None,
-            blit_pipeline: None,
-            crt_settings,
+            crt_effects,
+            target: None,
+            pipeline: None,
         }
     }
 
-    /// Returns whether pixel scaling is enabled for the given scale factor.
-    pub fn is_enabled(&self, scale_factor: f64) -> bool {
-        self.pixel_scale_mode.calculate_pixel_scale(scale_factor) > 1
-    }
-
-    /// Gets the pixel scale factor for the given scale factor.
-    pub fn pixel_scale(&self, scale_factor: f64) -> u32 {
-        self.pixel_scale_mode.calculate_pixel_scale(scale_factor)
-    }
-
-    /// Updates the CRT effect settings.
-    pub fn update_crt_settings(
-        &mut self,
-        settings: Option<crate::core::CrtEffectSettings>,
-    ) {
-        self.crt_settings = settings;
-    }
-
-    /// Gets the current CRT effect settings.
-    pub fn crt_settings(&self) -> Option<crate::core::CrtEffectSettings> {
-        self.crt_settings
-    }
-
-    /// Presents with pixel scaling if enabled.
+    /// Returns whether a frame drawn to the given [`Viewport`] needs to go
+    /// through the [`PixelScaler`].
     ///
-    /// Returns `Some(view, viewport)` if pixel scaling is enabled and rendering
-    /// should go to the intermediate texture. Returns `None` if rendering should
-    /// go directly to the surface.
-    pub fn prepare_render_target(
+    /// A frame that is neither upscaled nor CRT-filtered can be rendered
+    /// straight to the surface.
+    pub fn is_enabled(&self, viewport: &Viewport) -> bool {
+        viewport.pixel_scale() > 1 || self.crt_effects.is_some()
+    }
+
+    /// Returns the texture view a frame must be rendered to.
+    ///
+    /// The texture is created—or recreated—as needed.
+    pub fn target(
         &mut self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-        scale_factor: f64,
-    ) -> Option<(&wgpu::TextureView, Viewport)> {
-        let pixel_scale =
-            self.pixel_scale_mode.calculate_pixel_scale(scale_factor);
+        size: Size<u32>,
+    ) -> &wgpu::TextureView {
+        let size = Size::new(size.width.max(1), size.height.max(1));
 
-        if pixel_scale <= 1 {
-            return None;
+        if self
+            .target
+            .as_ref()
+            .is_none_or(|target| target.size != size || target.format != format)
+        {
+            self.target = Some(Target::new(device, format, size));
         }
 
-        // Calculate logical size from physical size and DPI scale factor
-        let logical_width =
-            (width as f64 / scale_factor).round().max(1.0) as u32;
-        let logical_height =
-            (height as f64 / scale_factor).round().max(1.0) as u32;
-
-        // Snap logical size to be divisible by pixel_scale to prevent gaps
-        // This ensures intermediate texture upscales perfectly to fill the logical size
-        let _snapped_logical_width =
-            (logical_width / pixel_scale) * pixel_scale;
-        let _snapped_logical_height =
-            (logical_height / pixel_scale) * pixel_scale;
-
-        // Calculate intermediate texture size from snapped logical size
-        let intermediate_width = (width / pixel_scale).max(1);
-        let intermediate_height = (height / pixel_scale).max(1);
-
-        self.ensure_intermediate_texture(
-            device,
-            format,
-            intermediate_width,
-            intermediate_height,
-        );
-
-        let intermediate = self.intermediate_texture.as_ref()?;
-
-        // Create viewport with the snapped logical size divided by pixel_scale
-        // Use scale_factor=1.0 for pixel-perfect 1:1 rendering with no sub-pixel positioning
-        // This ensures text and UI elements are positioned at whole pixel coordinates
-        let scaled_viewport = Viewport::with_physical_size(
-            crate::core::Size::new(intermediate.width, intermediate.height),
-            1.0,
-        );
-
-        Some((&intermediate.view, scaled_viewport))
+        &self
+            .target
+            .as_ref()
+            .expect("Pixel scale target just created")
+            .view
     }
 
-    /// Blits the intermediate texture to the final surface view.
-    pub fn blit_to_surface(
+    /// Upscales the last [`Self::target`] onto `view`, filling a surface of
+    /// `size` physical pixels.
+    ///
+    /// The upscale is an exact integer ratio: a source pixel always covers
+    /// `pixel_scale` physical pixels. Since the target is rounded up to cover
+    /// the whole surface, up to one source pixel may fall outside of it on the
+    /// right and bottom edges.
+    pub fn present(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
-        target_view: &wgpu::TextureView,
-        target_width: u32,
-        target_height: u32,
+        view: &wgpu::TextureView,
+        size: Size<u32>,
+        pixel_scale: u32,
     ) {
-        self.ensure_blit_pipeline(device, format);
-
-        let Some(intermediate) = &self.intermediate_texture else {
+        let Some(target) = &self.target else {
             return;
         };
 
-        let blit_pipeline = self
-            .blit_pipeline
+        if self
+            .pipeline
             .as_ref()
-            .expect("Blit pipeline should exist");
+            .is_none_or(|pipeline| pipeline.format != format)
+        {
+            self.pipeline = Some(Pipeline::new(device, format));
+        }
 
-        // Update CRT uniforms
-        let uniforms: CrtUniforms = if let Some(settings) = self.crt_settings {
-            settings.into()
-        } else {
-            // When disabled (None), set all effects to neutral/zero values
-            crate::core::CrtEffectSettings {
-                scanline_intensity: 0.0,
-                screen_curvature: 0.0,
-                rgb_separation: 0.0,
-                vignette_strength: 0.0,
-                brightness: 1.0,
-                contrast: 1.0,
-            }
-            .into()
-        };
+        let pipeline =
+            self.pipeline.as_ref().expect("Pixel scale pipeline exists");
+
+        let coverage = [
+            (target.size.width * pixel_scale) as f32 / size.width.max(1) as f32,
+            (target.size.height * pixel_scale) as f32
+                / size.height.max(1) as f32,
+        ];
+
         queue.write_buffer(
-            &blit_pipeline.uniform_buffer,
+            &pipeline.uniforms,
             0,
-            bytemuck::cast_slice(&[uniforms]),
+            bytemuck::bytes_of(&Uniforms::new(coverage, self.crt_effects)),
         );
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("iced_wgpu::pixel_scale blit encoder"),
+                label: Some("iced_wgpu::pixel_scale encoder"),
             });
 
         {
-            let mut render_pass =
+            let mut pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("iced_wgpu::pixel_scale blit pass"),
+                    label: Some("iced_wgpu::pixel_scale pass"),
                     color_attachments: &[Some(
                         wgpu::RenderPassColorAttachment {
-                            view: target_view,
+                            view,
                             resolve_target: None,
                             depth_slice: None,
                             ops: wgpu::Operations {
+                                // Screen curvature can leave parts of the
+                                // surface uncovered
                                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                                 store: wgpu::StoreOp::Store,
                             },
@@ -228,113 +140,99 @@ impl PixelScaleState {
                     occlusion_query_set: None,
                 });
 
-            // let src_w = intermediate.width;
-            // let src_h = intermediate.height;
-
-            // // Integer scale so every source pixel becomes exactly scale×scale physical pixels
-            // let scale_x = target_width / src_w;
-            // let scale_y = target_height / src_h;
-            // let scale = scale_x.min(scale_y).max(1);
-
-            // // Scaled blit area in physical pixels (exact integers)
-            // let blit_w = src_w * scale;
-            // let blit_h = src_h * scale;
-
-            // // Center (letterbox)
-            // let offset_x = ((target_width - blit_w) / 2) as f32;
-            // let offset_y = ((target_height - blit_h) / 2) as f32;
-
-            // render_pass.set_viewport(
-            //     offset_x,
-            //     offset_y,
-            //     blit_w as f32,
-            //     blit_h as f32,
-            //     0.0,
-            //     1.0,
-            // );
-            //
-            render_pass.set_viewport(
-                0.0,
-                0.0,
-                target_width as f32,
-                target_height as f32,
-                0.0,
-                1.0,
-            );
-
-            blit_pipeline.render(
-                device,
-                &intermediate.view,
-                target_width,
-                target_height,
-                &mut render_pass,
-            );
+            pass.set_pipeline(&pipeline.raw);
+            pass.set_bind_group(0, target.bind_group(device, pipeline), &[]);
+            pass.set_bind_group(1, &pipeline.uniform_bind_group, &[]);
+            pass.draw(0..4, 0..1);
         }
 
         let _submission = queue.submit([encoder.finish()]);
     }
+}
 
-    fn ensure_intermediate_texture(
-        &mut self,
+#[derive(Debug)]
+struct Target {
+    size: Size<u32>,
+    format: wgpu::TextureFormat,
+    view: wgpu::TextureView,
+    bind_group: std::sync::OnceLock<wgpu::BindGroup>,
+}
+
+impl Target {
+    fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-    ) {
-        let needs_recreate = self
-            .intermediate_texture
-            .as_ref()
-            .map(|tex| tex.width != width || tex.height != height)
-            .unwrap_or(true);
+        size: Size<u32>,
+    ) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("iced_wgpu::pixel_scale texture"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
 
-        if needs_recreate {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("iced_wgpu::pixel_scale intermediate texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-
-            let view =
-                texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-            self.intermediate_texture = Some(IntermediateTexture {
-                texture,
-                view,
-                width,
-                height,
-            });
+        Self {
+            size,
+            format,
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            bind_group: std::sync::OnceLock::new(),
         }
     }
 
-    fn ensure_blit_pipeline(
-        &mut self,
+    /// The bind group only ever refers to the texture of this [`Target`], so
+    /// it is created once and then reused for every frame.
+    fn bind_group(
+        &self,
         device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-    ) {
-        if self.blit_pipeline.is_some() {
-            return;
-        }
-
-        self.blit_pipeline = Some(BlitPipeline::new(device, format));
+        pipeline: &Pipeline,
+    ) -> &wgpu::BindGroup {
+        self.bind_group.get_or_init(|| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("iced_wgpu::pixel_scale texture bind group"),
+                layout: &pipeline.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            &pipeline.sampler,
+                        ),
+                    },
+                ],
+            })
+        })
     }
 }
 
-impl BlitPipeline {
+#[derive(Debug)]
+struct Pipeline {
+    raw: wgpu::RenderPipeline,
+    format: wgpu::TextureFormat,
+    texture_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    uniforms: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+}
+
+impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        // Bind group 0: Texture and sampler
-        let texture_bind_group_layout =
+        let texture_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("iced_wgpu::pixel_scale texture bind group layout"),
+                label: Some("iced_wgpu::pixel_scale texture layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -359,59 +257,51 @@ impl BlitPipeline {
                 ],
             });
 
-        // Bind group 1: CRT uniforms
-        let uniform_bind_group_layout =
+        let uniform_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("iced_wgpu::pixel_scale uniform bind group layout"),
+                label: Some("iced_wgpu::pixel_scale uniform layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size: wgpu::BufferSize::new(
+                            mem::size_of::<Uniforms>() as u64,
+                        ),
                     },
                     count: None,
                 }],
             });
 
-        let pipeline_layout =
+        let layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("iced_wgpu::pixel_scale pipeline layout"),
-                bind_group_layouts: &[
-                    &texture_bind_group_layout,
-                    &uniform_bind_group_layout,
-                ],
+                bind_group_layouts: &[&texture_layout, &uniform_layout],
                 push_constant_ranges: &[],
             });
 
         let shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("iced_wgpu::pixel_scale shader"),
-                source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("shader/pixel_scale.wgsl").into(),
+                ),
             });
 
-        let pipeline =
+        let raw =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("iced_wgpu::pixel_scale pipeline"),
-                layout: Some(&pipeline_layout),
+                layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
                     compilation_options:
                         wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x2,
-                            1 => Float32x2,
-                        ],
-                    }],
+                    buffers: &[],
                 },
                 primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    front_face: wgpu::FrontFace::Cw,
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
                     ..Default::default()
                 },
                 depth_stencil: None,
@@ -442,135 +332,41 @@ impl BlitPipeline {
             ..Default::default()
         });
 
-        let vertex_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("iced_wgpu::pixel_scale vertex buffer"),
-                contents: bytemuck::cast_slice(VERTICES),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-        let index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("iced_wgpu::pixel_scale index buffer"),
-                contents: bytemuck::cast_slice(INDICES),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-        let uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("iced_wgpu::pixel_scale uniform buffer"),
-                contents: bytemuck::cast_slice(&[CrtUniforms {
-                    scanline_intensity: 0.0,
-                    screen_curvature: 0.0,
-                    rgb_separation: 0.0,
-                    vignette_strength: 0.0,
-                    brightness: 1.0,
-                    contrast: 1.0,
-                    _padding: [0.0; 2],
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM
-                    | wgpu::BufferUsages::COPY_DST,
-            });
-
-        Self {
-            pipeline,
-            texture_bind_group_layout,
-            uniform_bind_group_layout,
-            sampler,
-            vertex_buffer,
-            index_buffer,
-            uniform_buffer,
-        }
-    }
-
-    fn render(
-        &self,
-        device: &wgpu::Device,
-        texture_view: &wgpu::TextureView,
-        _target_width: u32,
-        _target_height: u32,
-        render_pass: &mut wgpu::RenderPass<'_>,
-    ) {
-        let texture_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("iced_wgpu::pixel_scale texture bind group"),
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            texture_view,
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("iced_wgpu::pixel_scale uniforms"),
+            size: mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let uniform_bind_group =
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("iced_wgpu::pixel_scale uniform bind group"),
-                layout: &self.uniform_bind_group_layout,
+                layout: &uniform_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
+                    resource: uniforms.as_entire_binding(),
                 }],
             });
 
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &texture_bind_group, &[]);
-        render_pass.set_bind_group(1, &uniform_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(
-            self.index_buffer.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        render_pass.draw_indexed(0..6, 0, 0..1);
+        Self {
+            raw,
+            format,
+            texture_layout,
+            sampler,
+            uniforms,
+            uniform_bind_group,
+        }
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    tex_coords: [f32; 2],
-}
-
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, -1.0],
-        tex_coords: [0.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, -1.0],
-        tex_coords: [1.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, 1.0],
-        tex_coords: [1.0, 0.0],
-    },
-    Vertex {
-        position: [-1.0, 1.0],
-        tex_coords: [0.0, 0.0],
-    },
-];
-
-const INDICES: &[u16] = &[0, 1, 2, 0, 2, 3];
-
-const BLIT_SHADER: &str = r#"
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) tex_coords: vec2<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) tex_coords: vec2<f32>,
-}
-
-struct CrtUniforms {
+struct Uniforms {
+    /// The fraction of the surface covered by the upscaled target, which is
+    /// slightly greater than 1 when the surface is not a multiple of the pixel
+    /// scale.
+    coverage: [f32; 2],
     scanline_intensity: f32,
     screen_curvature: f32,
     rgb_separation: f32,
@@ -579,98 +375,30 @@ struct CrtUniforms {
     contrast: f32,
 }
 
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = vec4<f32>(input.position, 0.0, 1.0);
-    output.tex_coords = input.tex_coords;
-    return output;
+impl Uniforms {
+    fn new(coverage: [f32; 2], crt_effects: Option<CrtEffectSettings>) -> Self {
+        // Neutral values, so that the pass is a plain upscale
+        let crt_effects = crt_effects.unwrap_or(CrtEffectSettings {
+            scanline_intensity: 0.0,
+            screen_curvature: 0.0,
+            rgb_separation: 0.0,
+            vignette_strength: 0.0,
+            brightness: 1.0,
+            contrast: 1.0,
+        });
+
+        Self {
+            coverage,
+            scanline_intensity: crt_effects.scanline_intensity,
+            screen_curvature: crt_effects.screen_curvature,
+            rgb_separation: crt_effects.rgb_separation,
+            vignette_strength: crt_effects.vignette_strength,
+            brightness: crt_effects.brightness,
+            contrast: crt_effects.contrast,
+        }
+    }
 }
 
-@group(0) @binding(0)
-var t_texture: texture_2d<f32>;
-@group(0) @binding(1)
-var t_sampler: sampler;
-
-@group(1) @binding(0)
-var<uniform> crt: CrtUniforms;
-
-// Apply barrel distortion for CRT screen curvature
-fn apply_curvature(uv: vec2<f32>, amount: f32) -> vec2<f32> {
-    if (amount == 0.0) {
-        return uv;
-    }
-
-    let centered = uv * 2.0 - 1.0;
-    let dist = length(centered);
-    let distortion = 1.0 + amount * dist * dist;
-    let curved = centered * distortion;
-    return curved * 0.5 + 0.5;
-}
-
-// Vignette effect (darkening at screen edges)
-fn apply_vignette(uv: vec2<f32>, strength: f32) -> f32 {
-    if (strength == 0.0) {
-        return 1.0;
-    }
-
-    let centered = uv * 2.0 - 1.0;
-    let dist = length(centered);
-    return 1.0 - smoothstep(0.5, 1.5, dist) * strength;
-}
-
-// Scanline effect
-fn apply_scanlines(uv: vec2<f32>, intensity: f32) -> f32 {
-    if (intensity == 0.0) {
-        return 1.0;
-    }
-
-    let dims = vec2<f32>(textureDimensions(t_texture));
-    let scaled_y = uv.y * dims.y;
-    let scanline = sin(scaled_y * 3.14159265359);
-    return 1.0 - (scanline * 0.5 + 0.5) * intensity;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    var uv = input.tex_coords;
-
-    // Apply screen curvature
-    uv = apply_curvature(uv, crt.screen_curvature);
-
-    // Check if we're outside the screen after curvature
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
-
-    // Sample with RGB separation (chromatic aberration)
-    // rgb_separation is specified in pixels at the source texture resolution
-    // Convert to UV space for resolution-independent effect
-    var color: vec3<f32>;
-    if (crt.rgb_separation > 0.0) {
-        let dims = vec2<f32>(textureDimensions(t_texture));
-        let uv_offset = crt.rgb_separation / dims.x;
-        let r = textureSample(t_texture, t_sampler, uv + vec2<f32>(-uv_offset, 0.0)).r;
-        let g = textureSample(t_texture, t_sampler, uv).g;
-        let b = textureSample(t_texture, t_sampler, uv + vec2<f32>(uv_offset, 0.0)).b;
-        color = vec3<f32>(r, g, b);
-    } else {
-        color = textureSample(t_texture, t_sampler, uv).rgb;
-    }
-
-    // Apply scanlines
-    color *= apply_scanlines(uv, crt.scanline_intensity);
-
-    // Apply vignette
-    color *= apply_vignette(uv, crt.vignette_strength);
-
-    // Apply brightness and contrast
-    color = (color - 0.5) * crt.contrast + 0.5;
-    color *= crt.brightness;
-
-    // Clamp to valid range
-    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
-
-    return vec4<f32>(color, 1.0);
-}
-"#;
+// A uniform binding must be a multiple of 16 bytes on downlevel and Web
+// backends.
+const _: () = assert!(mem::size_of::<Uniforms>().is_multiple_of(16));

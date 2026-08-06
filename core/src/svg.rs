@@ -29,6 +29,13 @@ pub struct Svg<H = Handle> {
     ///
     /// 0 means transparent. 1 means opaque.
     pub opacity: f32,
+
+    /// If set to `true`, the [`Svg`] will be snapped to the pixel grid.
+    ///
+    /// This keeps the edges of an icon crisp and aligned with the widgets
+    /// around it; at the cost of making it jump by whole pixels when it moves,
+    /// which is visible when animating one.
+    pub snap: bool,
 }
 
 impl Svg<Handle> {
@@ -39,6 +46,7 @@ impl Svg<Handle> {
             color: None,
             rotation: Radians(0.0),
             opacity: 1.0,
+            snap: false,
         }
     }
 
@@ -57,6 +65,12 @@ impl Svg<Handle> {
     /// Sets the opacity of the [`Svg`].
     pub fn opacity(mut self, opacity: impl Into<f32>) -> Self {
         self.opacity = opacity.into();
+        self
+    }
+
+    /// Sets whether the [`Svg`] should be snapped to the pixel grid.
+    pub fn snap(mut self, snap: bool) -> Self {
+        self.snap = snap;
         self
     }
 }

@@ -136,4 +136,16 @@ impl Point<f32> {
             y: self.y.round() as u32,
         }
     }
+
+    /// Rounds the [`Point`] to the nearest integer coordinates.
+    ///
+    /// Unlike [`Self::snap`], the result stays a floating point [`Point`]—so
+    /// it can be fed back into layout or geometry. This is handy to keep pixel
+    /// art aligned to the pixel grid.
+    pub fn round(self) -> Point<f32> {
+        Point {
+            x: self.x.round(),
+            y: self.y.round(),
+        }
+    }
 }

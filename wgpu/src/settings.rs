@@ -1,5 +1,5 @@
 //! Configure a renderer.
-use crate::core::{self, Font, PixelScaleMode, Pixels};
+use crate::core::{self, Font, Pixels};
 use crate::graphics::{self, Antialiasing};
 
 /// The settings of a [`Renderer`].
@@ -28,28 +28,14 @@ pub struct Settings {
     /// By default, it is `None`.
     pub antialiasing: Option<Antialiasing>,
 
-    /// The pixel scale mode for retro pixel effects.
+    /// The CRT post-processing effects of the [`Renderer`].
     ///
-    /// This determines how pixel scaling is applied:
-    /// - `Auto(n)`: Automatically adjusts pixel scale based on monitor DPI to maintain
-    ///   a target visual size. The value `n` is the target size in logical pixels.
-    /// - `Fixed(n)`: Uses a fixed pixel scale factor regardless of monitor DPI.
+    /// Configure properties like scanlines, screen curvature, and color
+    /// separation for an authentic retro CRT monitor look.
     ///
-    /// When pixel scale is greater than 1, the scene will be rendered to a
-    /// downscaled texture and then upscaled with nearest-neighbor filtering,
-    /// creating a pixelated retro look.
-    ///
-    /// By default, it is `Fixed(1)` (no pixel scaling).
-    pub pixel_scale: PixelScaleMode,
-
-    /// CRT post-processing effect settings.
-    ///
-    /// These effects are applied when pixel scaling is enabled.
-    /// Configure properties like scanlines, screen curvature, and color separation
-    /// for an authentic retro CRT monitor look.
-    ///
-    /// Set to `Some(settings)` to enable, `None` to disable.
     /// By default, CRT effects are disabled (`None`).
+    ///
+    /// [`Renderer`]: crate::Renderer
     pub crt_effects: Option<core::CrtEffectSettings>,
 }
 
@@ -61,7 +47,6 @@ impl Default for Settings {
             default_font: Font::default(),
             default_text_size: Pixels(16.0),
             antialiasing: None,
-            pixel_scale: PixelScaleMode::default(),
             crt_effects: None,
         }
     }
@@ -78,7 +63,6 @@ impl From<graphics::Settings> for Settings {
             default_font: settings.default_font,
             default_text_size: settings.default_text_size,
             antialiasing: settings.antialiasing,
-            pixel_scale: settings.pixel_scale,
             crt_effects: settings.crt_effects,
             ..Settings::default()
         }
@@ -97,23 +81,6 @@ impl From<graphics::Settings> for Settings {
 /// - `fifo` → [`wgpu::PresentMode::Fifo`]
 /// - `fifo_relaxed` → [`wgpu::PresentMode::FifoRelaxed`]
 /// - `mailbox` → [`wgpu::PresentMode::Mailbox`]
-impl Settings {
-    /// Sets the CRT effect settings.
-    ///
-    /// Enables and configures retro CRT monitor effects like scanlines,
-    /// screen curvature, and color separation.
-    pub fn crt_effects(mut self, crt_effects: core::CrtEffectSettings) -> Self {
-        self.crt_effects = Some(crt_effects);
-        self
-    }
-
-    /// Enables CRT effects with default settings.
-    pub fn with_crt_effects(mut self) -> Self {
-        self.crt_effects = Some(core::CrtEffectSettings::default());
-        self
-    }
-}
-
 pub fn present_mode_from_env() -> Option<wgpu::PresentMode> {
     let present_mode = std::env::var("ICED_PRESENT_MODE").ok()?;
 

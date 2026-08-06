@@ -44,6 +44,7 @@ impl Pipeline {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
         transformation: Transformation,
+        snap: bool,
     ) {
         let Some(paragraph) = paragraph.upgrade() else {
             return;
@@ -60,6 +61,7 @@ impl Pipeline {
             pixels,
             clip_mask,
             transformation,
+            snap,
         );
     }
 
@@ -71,6 +73,7 @@ impl Pipeline {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
         transformation: Transformation,
+        snap: bool,
     ) {
         let Some(editor) = editor.upgrade() else {
             return;
@@ -87,6 +90,7 @@ impl Pipeline {
             pixels,
             clip_mask,
             transformation,
+            snap,
         );
     }
 
@@ -104,6 +108,7 @@ impl Pipeline {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
         transformation: Transformation,
+        snap: bool,
     ) {
         let line_height = f32::from(line_height);
 
@@ -148,6 +153,7 @@ impl Pipeline {
             pixels,
             clip_mask,
             transformation,
+            snap,
         );
     }
 
@@ -159,6 +165,7 @@ impl Pipeline {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: Option<&tiny_skia::Mask>,
         transformation: Transformation,
+        snap: bool,
     ) {
         let mut font_system = font_system().write().expect("Write font system");
 
@@ -171,6 +178,7 @@ impl Pipeline {
             pixels,
             clip_mask,
             transformation,
+            snap,
         );
     }
 
@@ -189,10 +197,18 @@ fn draw(
     pixels: &mut tiny_skia::PixmapMut<'_>,
     clip_mask: Option<&tiny_skia::Mask>,
     transformation: Transformation,
+    snap: bool,
 ) {
     let position = position * transformation;
-    // Round position to whole pixels to prevent blurry text
-    let position = Point::new(position.x.round(), position.y.round());
+
+    // Pixel art has no room for subpixel positioning: a glyph landing at a
+    // fractional coordinate would be sampled across two pixels and turn blurry
+    // once the frame is upscaled.
+    let position = if snap {
+        Point::new(position.x.round(), position.y.round())
+    } else {
+        position
+    };
 
     let mut swash = cosmic_text::SwashCache::new();
 

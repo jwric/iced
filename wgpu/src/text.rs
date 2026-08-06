@@ -1,6 +1,6 @@
 use crate::core::alignment;
 use crate::core::text::Alignment;
-use crate::core::{Rectangle, Size, Transformation};
+use crate::core::{Point, Rectangle, Size, Transformation};
 use crate::graphics::cache;
 use crate::graphics::color;
 use crate::graphics::text::cache::{self as text_cache, Cache as BufferCache};
@@ -116,6 +116,7 @@ impl Storage {
         cache: &Cache,
         new_transformation: Transformation,
         bounds: Rectangle,
+        snap: bool,
     ) {
         let group_count = self.groups.len();
 
@@ -156,6 +157,7 @@ impl Storage {
                             &cache.text,
                             bounds,
                             new_transformation,
+                            snap,
                         );
                     }
 
@@ -193,6 +195,7 @@ impl Storage {
                         &cache.text,
                         bounds,
                         new_transformation,
+                        snap,
                     );
                 }
 
@@ -325,6 +328,7 @@ impl State {
         batch: &Batch,
         layer_bounds: Rectangle,
         layer_transformation: Transformation,
+        snap: bool,
     ) {
         let mut atlas = pipeline.atlas.write().expect("Write to text atlas");
 
@@ -355,6 +359,7 @@ impl State {
                         text,
                         layer_bounds * layer_transformation,
                         layer_transformation * *transformation,
+                        snap,
                     );
 
                     match result {
@@ -382,6 +387,7 @@ impl State {
                         cache,
                         layer_transformation * *transformation,
                         layer_bounds * layer_transformation,
+                        snap,
                     );
                 }
             }
@@ -451,6 +457,7 @@ fn prepare(
     sections: &[Text],
     layer_bounds: Rectangle,
     layer_transformation: Transformation,
+    snap: bool,
 ) -> Result<(), cryoglyph::PrepareError> {
     let mut font_system = font_system().write().expect("Write font system");
     let font_system = font_system.raw();
@@ -618,15 +625,19 @@ fn prepare(
                 &(clip_bounds * transformation * layer_transformation),
             )?;
 
-            // Round text position to whole pixels to prevent blurry text.
-            // When text is positioned at fractional coordinates (e.g., x=100.5),
-            // the GPU interpolates between pixels during sampling, causing blur.
-            // This is especially noticeable during window resizing when scale
-            // factors produce fractional positions after transformations.
+            // Pixel art has no room for subpixel positioning: a glyph landing
+            // at a fractional coordinate would be sampled across two pixels
+            // and turn blurry once the frame is upscaled.
+            let position = if snap {
+                Point::new(position.x.round(), position.y.round())
+            } else {
+                position
+            };
+
             Some(cryoglyph::TextArea {
                 buffer,
-                left: position.x.round(),
-                top: position.y.round(),
+                left: position.x,
+                top: position.y,
                 scale: transformation.scale_factor()
                     * layer_transformation.scale_factor(),
                 bounds: cryoglyph::TextBounds {
