@@ -1,5 +1,5 @@
 use crate::conversion;
-use crate::core::{Color, PixelScaleMode, Point, Size};
+use crate::core::{Color, PixelScaleMode, Size};
 use crate::core::{mouse, theme, window};
 use crate::graphics::Viewport;
 use crate::program::{self, Program};
@@ -19,13 +19,13 @@ where
     viewport: Viewport,
     surface_version: u64,
     cursor_position: Option<winit::dpi::PhysicalPosition<f64>>,
-    touch_cursor_released: bool,
     modifiers: winit::keyboard::ModifiersState,
     theme: Option<P::Theme>,
     theme_mode: theme::Mode,
     default_theme: P::Theme,
     style: theme::Style,
     pixel_scale_mode: PixelScaleMode,
+    touch_cursor_released: bool,
 }
 
 impl<P: Program> Debug for State<P>
@@ -77,9 +77,10 @@ where
             #[cfg(target_arch = "wasm32")]
             let physical_size = web_canvas_physical_size(window);
 
-            Viewport::with_physical_size(
+            viewport(
                 Size::new(physical_size.width, physical_size.height),
                 window.scale_factor() as f32 * scale_factor,
+                pixel_scale_mode,
             )
         };
 
@@ -89,13 +90,13 @@ where
             viewport,
             surface_version: 0,
             cursor_position: None,
-            touch_cursor_released: false,
             modifiers: winit::keyboard::ModifiersState::default(),
             theme,
             theme_mode,
             default_theme,
             style,
             pixel_scale_mode,
+            touch_cursor_released: false,
         }
     }
 
@@ -115,55 +116,17 @@ where
         self.viewport.logical_size()
     }
 
-    /// Returns the scaled physical size of the window scaled by the pixel scale factor.
-    /// This is the size that should be used for UI layout when pixel scaling is enabled.
-    pub fn scaled_physical_size(&self) -> Size<f32> {
-        let logical = self.viewport.physical_size();
-        let pixel_scale = self
-            .pixel_scale_mode
-            .calculate_pixel_scale(self.viewport.scale_factor() as f64);
-        let scale = pixel_scale as u32;
-
-        if scale == 1 {
-            return self.viewport.logical_size();
-        }
-
-        Size::new(
-            (logical.width / scale) as f32,
-            (logical.height / scale) as f32,
-        )
-    }
-
     pub fn scale_factor(&self) -> f32 {
         self.viewport.scale_factor()
-    }
-
-    /// Gets the calculated pixel scale based on the current DPI.
-    pub fn pixel_scale(&self) -> u32 {
-        self.pixel_scale_mode
-            .calculate_pixel_scale(self.viewport.scale_factor() as f64)
-    }
-
-    /// Gets the pixel scale mode.
-    pub fn pixel_scale_mode(&self) -> PixelScaleMode {
-        self.pixel_scale_mode
     }
 
     pub fn cursor(&self) -> mouse::Cursor {
         self.cursor_position
             .map(|cursor_position| {
-                let pixel_scale = self.pixel_scale();
-                if pixel_scale == 1 {
-                    conversion::cursor_position(
-                        cursor_position,
-                        self.viewport.scale_factor(),
-                    )
-                } else {
-                    Point::new(
-                        cursor_position.x as f32 / pixel_scale as f32,
-                        cursor_position.y as f32 / pixel_scale as f32,
-                    )
-                }
+                conversion::cursor_position(
+                    cursor_position,
+                    self.viewport.scale_factor(),
+                )
             })
             .map(mouse::Cursor::Available)
             .unwrap_or(mouse::Cursor::Unavailable)
@@ -214,84 +177,25 @@ where
     ) {
         match event {
             WindowEvent::Resized(new_size) => {
-                // Use the actual physical size from winit
                 let size = Size::new(new_size.width, new_size.height);
 
-                // Native windows can be snapped to the pixel grid. A browser
-                // canvas is CSS-sized and cannot be forced to a nearby
-                // physical size; trying to do so makes keyboard-driven
-                // visual viewport resizes stall indefinitely.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let k = self.pixel_scale();
-                    if k > 1
-                        && !window.is_maximized()
-                        && window.fullscreen().is_none()
-                    {
-                        let snapped_w = (size.width / k).max(1) * k;
-                        let snapped_h = (size.height / k).max(1) * k;
-
-                        if snapped_w != size.width || snapped_h != size.height {
-                            let snapped = winit::dpi::PhysicalSize::new(
-                                snapped_w, snapped_h,
-                            );
-
-                            // Request the snapped size...
-                            let _ = window.request_inner_size(snapped);
-
-                            // ...but DO NOT change viewport yet, because the
-                            // window is still `new_size`. Wait for the next
-                            // Resized event that matches `snapped`.
-                            return;
-                        }
-                    }
-                }
-
-                // At this point, either snapping is disabled OR size is already snapped.
-                self.viewport = Viewport::with_physical_size(
+                self.viewport = viewport(
                     size,
                     window.scale_factor() as f32 * self.scale_factor,
+                    self.pixel_scale_mode,
                 );
                 self.surface_version += 1;
             }
             WindowEvent::ScaleFactorChanged {
-                scale_factor: sf, ..
+                scale_factor: new_scale_factor,
+                ..
             } => {
-                let new_inner_size = window.inner_size();
+                let size = self.viewport.physical_size();
 
-                #[cfg(target_arch = "wasm32")]
-                let size =
-                    Size::new(new_inner_size.width, new_inner_size.height);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                let mut size =
-                    Size::new(new_inner_size.width, new_inner_size.height);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let k = self.pixel_scale();
-                    if k > 1
-                        && !window.is_maximized()
-                        && window.fullscreen().is_none()
-                    {
-                        let snapped_w = (size.width / k).max(1) * k;
-                        let snapped_h = (size.height / k).max(1) * k;
-
-                        if snapped_w != size.width || snapped_h != size.height {
-                            let snapped = winit::dpi::PhysicalSize::new(
-                                snapped_w, snapped_h,
-                            );
-                            let _ = window.request_inner_size(snapped);
-                            return;
-                        }
-
-                        size = Size::new(snapped_w, snapped_h);
-                    }
-                }
-
-                self.viewport = Viewport::with_physical_size(
+                self.viewport = viewport(
                     size,
-                    *sf as f32 * self.scale_factor,
+                    *new_scale_factor as f32 * self.scale_factor,
+                    self.pixel_scale_mode,
                 );
                 self.surface_version += 1;
             }
@@ -346,9 +250,10 @@ where
             return false;
         }
 
-        self.viewport = Viewport::with_physical_size(
+        self.viewport = viewport(
             Size::new(physical_size.width, physical_size.height),
             window.scale_factor() as f32 * self.scale_factor,
+            self.pixel_scale_mode,
         );
         self.surface_version += 1;
         true
@@ -372,9 +277,10 @@ where
         let new_scale_factor = program.scale_factor(window_id);
 
         if self.scale_factor != new_scale_factor {
-            self.viewport = Viewport::with_physical_size(
+            self.viewport = viewport(
                 self.viewport.physical_size(),
                 window.scale_factor() as f32 * new_scale_factor,
+                self.pixel_scale_mode,
             );
 
             self.scale_factor = new_scale_factor;
@@ -422,6 +328,26 @@ where
 
             self.theme_mode = new_mode;
         }
+    }
+}
+
+/// Builds the [`Viewport`] of a window of the given physical `size`.
+///
+/// When `pixel_scale_mode` resolves to a pixel scale greater than 1, the
+/// resulting [`Viewport`] renders to a low resolution framebuffer that a
+/// compositor upscales with nearest-neighbor filtering. The pixel scale then
+/// __replaces__ `scale_factor`, which is only used to derive it.
+fn viewport(
+    size: Size<u32>,
+    scale_factor: f32,
+    pixel_scale_mode: PixelScaleMode,
+) -> Viewport {
+    let pixel_scale = pixel_scale_mode.resolve(scale_factor);
+
+    if pixel_scale > 1 {
+        Viewport::with_pixel_scale(size, pixel_scale)
+    } else {
+        Viewport::with_physical_size(size, scale_factor)
     }
 }
 

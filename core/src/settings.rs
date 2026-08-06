@@ -3,60 +3,90 @@ use crate::{Font, Pixels};
 
 use std::borrow::Cow;
 
-/// The pixel scale mode for retro pixel effects.
+/// The strategy used to pick the __pixel scale__ of an interface.
+///
+/// The pixel scale is the amount of physical pixels that a single __virtual
+/// pixel__ occupies on screen. When it is greater than 1, the interface is
+/// laid out and rendered in virtual pixels—into a low resolution
+/// framebuffer—and then upscaled with nearest-neighbor filtering; producing
+/// the crisp, chunky look of pixel art applications like Aseprite.
+///
+/// A pixel scale is always an integer. This is what guarantees that every
+/// virtual pixel ends up covering the exact same amount of physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelScaleMode {
-    /// Automatically adjust pixel scale based on monitor DPI to maintain a target physical pixel size.
+    /// Use a fixed pixel scale, no matter the display.
     ///
-    /// The `u32` value represents the target size in logical pixels (at 96 DPI) that each
-    /// virtual pixel should appear on screen. For example:
-    /// - `Auto(2)` means each virtual pixel should be approximately 2 logical pixels
-    /// - `Auto(3)` means each virtual pixel should be approximately 3 logical pixels
+    /// `Fixed(1)` disables pixel scaling entirely.
     ///
-    /// The actual pixel scale will be automatically calculated as an integer value
-    /// based on the monitor's DPI to maintain pixel-perfect rendering while
-    /// achieving the desired visual size.
-    Auto(u32),
-
-    /// Use a fixed pixel scale factor regardless of monitor DPI.
-    ///
-    /// The `u32` value is the pixel scale factor directly (1 = no scaling).
+    /// Note that a fixed pixel scale ignores the scale factor of the display;
+    /// which means an interface will look smaller on a high density display.
+    /// Use [`Auto`](Self::Auto) if you want to keep its apparent size
+    /// consistent instead.
     Fixed(u32),
+
+    /// Derive the pixel scale from the scale factor of the display, targeting
+    /// the given amount of __logical__ pixels per virtual pixel.
+    ///
+    /// For instance, `Auto(2)` makes a virtual pixel take approximately the
+    /// space of 2 logical pixels; which means a pixel scale of `2` on a
+    /// regular display and `4` on a 2x high density display.
+    ///
+    /// This is normally what you want, since it keeps the apparent size of an
+    /// interface consistent across displays while staying pixel-perfect.
+    Auto(u32),
 }
 
 impl PixelScaleMode {
-    /// Calculate the actual pixel scale to use given the monitor's scale factor.
+    /// A [`PixelScaleMode`] that disables pixel scaling.
+    pub const NONE: Self = Self::Fixed(1);
+
+    /// Resolves the [`PixelScaleMode`] into a pixel scale for a display with
+    /// the given scale factor.
     ///
-    /// For `Auto` mode, this computes an integer scale that makes virtual pixels
-    /// appear close to the target physical size.
-    /// For `Fixed` mode, this returns the fixed value.
-    pub fn calculate_pixel_scale(&self, scale_factor: f64) -> u32 {
+    /// The result is always greater than or equal to 1.
+    pub fn resolve(self, scale_factor: f32) -> u32 {
         match self {
-            PixelScaleMode::Auto(target_size) => {
-                // Calculate the pixel scale that achieves the target size
-                // scale_factor represents DPI/96 (e.g., 2.0 for 192 DPI)
-                // We want: virtual_pixel_size = target_size
-                // Since virtual pixels are scaled by pixel_scale in logical space,
-                // and logical pixels are scaled by scale_factor to physical pixels:
-                // pixel_scale = target_size (at 1.0 scale_factor)
-                // At higher DPI, we want to maintain the same physical size, so:
-                // pixel_scale = (target_size * scale_factor).round()
-                let calculated =
-                    ((*target_size as f64) * scale_factor).round() as u32;
-                calculated.max(1)
+            Self::Fixed(pixel_scale) => pixel_scale.max(1),
+            Self::Auto(target) => {
+                if !scale_factor.is_finite() || scale_factor <= 0.0 {
+                    return target.max(1);
+                }
+
+                let pixel_scale = (target as f32 * scale_factor).round();
+
+                if pixel_scale >= 1.0 {
+                    pixel_scale as u32
+                } else {
+                    1
+                }
             }
-            PixelScaleMode::Fixed(scale) => (*scale).max(1),
         }
+    }
+
+    /// Returns true if the [`PixelScaleMode`] can never produce a pixel scale
+    /// greater than 1.
+    pub fn is_disabled(self) -> bool {
+        matches!(self, Self::Fixed(pixel_scale) if pixel_scale <= 1)
     }
 }
 
 impl Default for PixelScaleMode {
     fn default() -> Self {
-        PixelScaleMode::Fixed(1)
+        Self::NONE
+    }
+}
+
+impl From<u32> for PixelScaleMode {
+    fn from(pixel_scale: u32) -> Self {
+        Self::Fixed(pixel_scale)
     }
 }
 
 /// Configuration for CRT post-processing effects.
+///
+/// CRT effects are currently only supported by the `wgpu` renderer. They are
+/// silently ignored by any other renderer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CrtEffectSettings {
     /// Scanline intensity (0.0 = none, 1.0 = maximum).
@@ -125,27 +155,27 @@ pub struct Settings {
     /// By default, it is enabled.
     pub vsync: bool,
 
-    /// The pixel scale mode for retro pixel effects.
+    /// The [`PixelScaleMode`] of the application.
     ///
-    /// This determines how pixel scaling is applied:
-    /// - `Auto(n)`: Automatically adjusts pixel scale based on monitor DPI to maintain
-    ///   a target visual size. The value `n` is the target size in logical pixels.
-    /// - `Fixed(n)`: Uses a fixed pixel scale factor regardless of monitor DPI.
+    /// When the resolved pixel scale is greater than 1, the interface is laid
+    /// out and rendered into a low resolution framebuffer and then upscaled
+    /// with nearest-neighbor filtering; producing crisp, pixel art-style
+    /// graphics.
     ///
-    /// When pixel scale is greater than 1, the scene will be rendered to a
-    /// downscaled texture and then upscaled with nearest-neighbor filtering,
-    /// creating a pixelated retro look.
+    /// A pixel scale replaces the scale factor of the display, instead of
+    /// compounding with it. Use [`PixelScaleMode::Auto`] to derive it from the
+    /// display and keep the apparent size of the interface consistent.
     ///
-    /// By default, it is `Fixed(1)` (no pixel scaling).
+    /// By default, it is [`PixelScaleMode::NONE`] (no pixel scaling).
     pub pixel_scale: PixelScaleMode,
 
-    /// CRT post-processing effect settings.
+    /// The CRT post-processing effects of the application.
     ///
-    /// These effects are applied when pixel scaling is enabled.
-    /// Configure properties like scanlines, screen curvature, and color separation
-    /// for an authentic retro CRT monitor look.
+    /// Configure properties like scanlines, screen curvature, and color
+    /// separation for an authentic retro CRT monitor look.
     ///
-    /// Set to `Some(settings)` to enable, `None` to disable.
+    /// Only supported by the `wgpu` renderer; ignored by any other renderer.
+    ///
     /// By default, CRT effects are disabled (`None`).
     pub crt_effects: Option<CrtEffectSettings>,
 }
@@ -170,47 +200,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pixel_scale_mode_fixed() {
+    fn fixed_pixel_scale_ignores_the_scale_factor() {
         let mode = PixelScaleMode::Fixed(3);
 
-        // Fixed mode should return the same value regardless of scale factor
-        assert_eq!(mode.calculate_pixel_scale(1.0), 3);
-        assert_eq!(mode.calculate_pixel_scale(1.5), 3);
-        assert_eq!(mode.calculate_pixel_scale(2.0), 3);
+        assert_eq!(mode.resolve(1.0), 3);
+        assert_eq!(mode.resolve(1.5), 3);
+        assert_eq!(mode.resolve(2.0), 3);
     }
 
     #[test]
-    fn test_pixel_scale_mode_auto() {
+    fn automatic_pixel_scale_follows_the_scale_factor() {
         let mode = PixelScaleMode::Auto(2);
 
-        // Auto mode should scale with DPI
-        assert_eq!(mode.calculate_pixel_scale(1.0), 2); // 2 * 1.0 = 2
-        assert_eq!(mode.calculate_pixel_scale(1.5), 3); // 2 * 1.5 = 3
-        assert_eq!(mode.calculate_pixel_scale(2.0), 4); // 2 * 2.0 = 4
+        assert_eq!(mode.resolve(1.0), 2);
+        assert_eq!(mode.resolve(1.5), 3);
+        assert_eq!(mode.resolve(2.0), 4);
+
+        // Halfway cases round away from zero
+        assert_eq!(mode.resolve(1.25), 3);
+        assert_eq!(mode.resolve(1.75), 4);
     }
 
     #[test]
-    fn test_pixel_scale_mode_auto_rounding() {
-        let mode = PixelScaleMode::Auto(2);
+    fn a_pixel_scale_is_never_smaller_than_one() {
+        assert_eq!(PixelScaleMode::Fixed(0).resolve(1.0), 1);
+        assert_eq!(PixelScaleMode::Auto(0).resolve(1.0), 1);
 
-        // Test rounding behavior
-        assert_eq!(mode.calculate_pixel_scale(1.25), 3); // 2 * 1.25 = 2.5 -> 3
-        assert_eq!(mode.calculate_pixel_scale(1.75), 4); // 2 * 1.75 = 3.5 -> 4
+        // A tiny scale factor must not disable rendering altogether
+        assert_eq!(PixelScaleMode::Auto(1).resolve(0.1), 1);
     }
 
     #[test]
-    fn test_pixel_scale_mode_minimum() {
-        // Should never return less than 1
-        let mode_fixed = PixelScaleMode::Fixed(0);
-        assert_eq!(mode_fixed.calculate_pixel_scale(1.0), 1);
+    fn a_nonsensical_scale_factor_falls_back_to_the_target() {
+        let mode = PixelScaleMode::Auto(3);
 
-        let mode_auto = PixelScaleMode::Auto(0);
-        assert_eq!(mode_auto.calculate_pixel_scale(1.0), 1);
+        assert_eq!(mode.resolve(f32::NAN), 3);
+        assert_eq!(mode.resolve(0.0), 3);
+        assert_eq!(mode.resolve(-1.0), 3);
     }
 
     #[test]
-    fn test_pixel_scale_mode_default() {
-        let mode = PixelScaleMode::default();
-        assert_eq!(mode, PixelScaleMode::Fixed(1));
+    fn pixel_scaling_is_disabled_by_default() {
+        assert_eq!(PixelScaleMode::default(), PixelScaleMode::NONE);
+        assert!(PixelScaleMode::default().is_disabled());
+        assert_eq!(PixelScaleMode::default().resolve(2.0), 1);
+
+        assert!(!PixelScaleMode::Auto(1).is_disabled());
+        assert!(!PixelScaleMode::Fixed(2).is_disabled());
+    }
+
+    #[test]
+    fn a_bare_integer_is_a_fixed_pixel_scale() {
+        assert_eq!(PixelScaleMode::from(4), PixelScaleMode::Fixed(4));
     }
 }

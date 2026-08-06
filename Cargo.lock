@@ -3208,6 +3208,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "manual_geometry"
+version = "0.1.0"
+dependencies = [
+ "iced",
+]
+
+[[package]]
 name = "markdown"
 version = "0.1.0"
 dependencies = [
@@ -4291,6 +4298,13 @@ dependencies = [
  "atomic-waker",
  "fastrand",
  "futures-io",
+]
+
+[[package]]
+name = "pixel_art"
+version = "0.1.0"
+dependencies = [
+ "iced",
 ]
 
 [[package]]
@@ -6217,6 +6231,13 @@ dependencies = [
  "thiserror 1.0.69",
  "url",
  "utf-8",
+]
+
+[[package]]
+name = "tuning_knob"
+version = "0.1.0"
+dependencies = [
+ "iced",
 ]
 
 [[package]]

@@ -230,78 +230,77 @@ impl<P: Program> Application<P> {
         }
     }
 
-    /// Sets the [`Settings::pixel_scale`] to a fixed value.
+    /// Sets the [`Settings::pixel_scale`] of the [`Application`].
     ///
-    /// Pixel scaling creates a retro pixelated effect by rendering at a lower
-    /// resolution and upscaling with nearest-neighbor filtering.
+    /// The interface will be laid out and rendered in __virtual pixels__ into
+    /// a low resolution framebuffer, which is then upscaled with
+    /// nearest-neighbor filtering; producing the crisp, chunky look of pixel
+    /// art. Every renderer supports it.
     ///
-    /// Values of 2-4 provide a good balance between retro aesthetic and readability.
-    pub fn pixel_scale(self, pixel_scale: u32) -> Self {
+    /// A bare integer is a [`PixelScaleMode::Fixed`] pixel scale:
+    ///
+    /// ```no_run,standalone_crate
+    /// use iced::widget::{text, Column};
+    ///
+    /// pub fn main() -> iced::Result {
+    ///     iced::application(u64::default, update, view).pixel_scale(3).run()
+    /// }
+    ///
+    /// fn update(value: &mut u64, _message: ()) {
+    ///     *value += 1;
+    /// }
+    ///
+    /// fn view(value: &u64) -> Column<'_, ()> {
+    ///     iced::widget::column![text(value)]
+    /// }
+    /// ```
+    ///
+    /// A fixed pixel scale ignores the density of the display, though—which
+    /// makes an interface look smaller on a high density one. Prefer
+    /// [`PixelScaleMode::Auto`] to keep its apparent size consistent:
+    ///
+    /// ```no_run,standalone_crate
+    /// use iced::widget::{text, Column};
+    /// use iced::PixelScaleMode;
+    ///
+    /// pub fn main() -> iced::Result {
+    ///     iced::application(u64::default, update, view)
+    ///         .pixel_scale(PixelScaleMode::Auto(3))
+    ///         .run()
+    /// }
+    ///
+    /// fn update(value: &mut u64, _message: ()) {
+    ///     *value += 1;
+    /// }
+    ///
+    /// fn view(value: &u64) -> Column<'_, ()> {
+    ///     iced::widget::column![text(value)]
+    /// }
+    /// ```
+    ///
+    /// A pixel scale __replaces__ the scale factor of the display. Notably,
+    /// this means [`Application::scale_factor`] only takes part in deriving it.
+    pub fn pixel_scale(self, pixel_scale: impl Into<PixelScaleMode>) -> Self {
         Self {
             settings: Settings {
-                pixel_scale: PixelScaleMode::Fixed(pixel_scale),
+                pixel_scale: pixel_scale.into(),
                 ..self.settings
             },
             ..self
         }
     }
 
-    /// Sets the [`Settings::pixel_scale`] to automatically adjust based on monitor DPI.
+    /// Sets the [`Settings::crt_effects`] of the [`Application`].
     ///
-    /// The `target_size` parameter specifies how many logical pixels (at 96 DPI)
-    /// each virtual pixel should appear as. For example:
-    /// - `pixel_scale_auto(2)` makes each virtual pixel appear as ~2 logical pixels
-    /// - `pixel_scale_auto(3)` makes each virtual pixel appear as ~3 logical pixels
+    /// CRT effects emulate a retro monitor with scanlines, screen curvature,
+    /// color separation and a vignette. They pair well with a pixel scale, but
+    /// do not require one.
     ///
-    /// The actual pixel scale will be calculated as an integer value based on the
-    /// monitor's DPI, maintaining pixel-perfect rendering while achieving the desired
-    /// visual size across different displays.
-    pub fn pixel_scale_auto(self, target_size: u32) -> Self {
-        Self {
-            settings: Settings {
-                pixel_scale: PixelScaleMode::Auto(target_size),
-                ..self.settings
-            },
-            ..self
-        }
-    }
-
-    /// Sets the [`Settings::pixel_scale`] mode directly.
-    ///
-    /// This allows full control over the pixel scale mode, choosing between
-    /// `PixelScaleMode::Auto(n)` or `PixelScaleMode::Fixed(n)`.
-    pub fn pixel_scale_mode(self, pixel_scale_mode: PixelScaleMode) -> Self {
-        Self {
-            settings: Settings {
-                pixel_scale: pixel_scale_mode,
-                ..self.settings
-            },
-            ..self
-        }
-    }
-
-    /// Sets the CRT effect settings of the [`Application`].
-    ///
-    /// CRT effects provide retro monitor aesthetics including scanlines, screen curvature,
-    /// and color separation. These effects are applied when pixel scaling is enabled.
+    /// Only supported by the `wgpu` renderer; ignored by any other renderer.
     pub fn crt_effects(self, crt_effects: CrtEffectSettings) -> Self {
         Self {
             settings: Settings {
                 crt_effects: Some(crt_effects),
-                ..self.settings
-            },
-            ..self
-        }
-    }
-
-    /// Enables CRT effects with default settings.
-    ///
-    /// This is a convenience method that enables CRT effects without needing to
-    /// construct a [`CrtEffectSettings`] manually.
-    pub fn with_crt_effects(self) -> Self {
-        Self {
-            settings: Settings {
-                crt_effects: Some(CrtEffectSettings::default()),
                 ..self.settings
             },
             ..self

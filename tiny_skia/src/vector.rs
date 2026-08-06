@@ -30,6 +30,13 @@ impl Pipeline {
             .unwrap_or(Size::new(0, 0))
     }
 
+    /// Draws an SVG into the given __physical__ `bounds`, rotated by
+    /// `rotation` radians around their center.
+    ///
+    /// When `snap` is set, the SVG is placed on whole pixels; otherwise it
+    /// keeps its exact sub-pixel position, which is what lets it move
+    /// smoothly.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         handle: &Handle,
@@ -37,26 +44,64 @@ impl Pipeline {
         bounds: Rectangle,
         opacity: f32,
         pixels: &mut tiny_skia::PixmapMut<'_>,
-        transform: Transform,
+        rotation: f32,
+        snap: bool,
         clip_mask: Option<&tiny_skia::Mask>,
     ) {
-        if let Some(image) = self.cache.borrow_mut().draw(
+        // An SVG is rasterized straight at its device size, so the size must
+        // be __rounded__. Truncating it—as this used to—loses up to a pixel on
+        // every edge, and a size that truncates to zero makes a small icon
+        // disappear entirely.
+        let mut cache = self.cache.borrow_mut();
+
+        let Some(image) = cache.draw(
             handle,
             color,
             Size::new(
-                (bounds.width * transform.sx) as u32,
-                (bounds.height * transform.sy) as u32,
+                (bounds.width.round() as u32).max(1),
+                (bounds.height.round() as u32).max(1),
             ),
-        ) {
+        ) else {
+            return;
+        };
+
+        let paint = tiny_skia::PixmapPaint {
+            opacity,
+            ..tiny_skia::PixmapPaint::default()
+        };
+
+        if snap && rotation == 0.0 {
+            // A whole pixel offset with no transform is a plain copy: no
+            // resampling, and the position lands on the same grid the snapped
+            // quads around the icon are aligned to.
             pixels.draw_pixmap(
-                (bounds.x * transform.sx) as i32,
-                (bounds.y * transform.sy) as i32,
+                bounds.x.round() as i32,
+                bounds.y.round() as i32,
                 image,
-                &tiny_skia::PixmapPaint {
-                    opacity,
-                    ..tiny_skia::PixmapPaint::default()
-                },
+                &paint,
                 Transform::default(),
+                clip_mask,
+            );
+        } else {
+            // The rasterized image is already at its device size, so only the
+            // rotation may go into the matrix. Folding the scale in there too
+            // would rasterize at `size` and then scale it a second time.
+            //
+            // The translation is carried here as well, so an unsnapped SVG
+            // keeps its fractional position instead of being rounded away.
+            let center = bounds.center();
+
+            pixels.draw_pixmap(
+                0,
+                0,
+                image,
+                &paint,
+                Transform::from_rotate_at(
+                    rotation.to_degrees(),
+                    center.x,
+                    center.y,
+                )
+                .pre_translate(bounds.x, bounds.y),
                 clip_mask,
             );
         }

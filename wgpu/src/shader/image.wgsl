@@ -85,12 +85,20 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let d = uv - uv_center;
     out.uv = vec2<f32>(d.x * cos_r - d.y * sin_r, d.x * sin_r + d.y * cos_r) + uv_center;
 
-    // Snap position to the pixel grid
+    // Snap position to the pixel grid.
+    //
+    // The bias resolves ties away from zero, like the quad shaders do.
+    // `round` resolves them to the even integer instead, which would make an
+    // image and the quad behind it land a pixel apart at exact half pixels.
     if bool(input.snap) {
-        out.position = round(out.position);
+        // Both edges are rounded from the same origin, so that the far one
+        // lands on a whole pixel too.
+        let origin = round(out.clip_bounds.xy + 0.001);
+
+        out.position = vec4(round(out.position.xy + 0.001), out.position.zw);
         out.clip_bounds = vec4(
-            round(out.clip_bounds.xy),
-            round(out.clip_bounds.xy + out.clip_bounds.zw) - out.clip_bounds.xy,
+            origin,
+            round(out.clip_bounds.xy + out.clip_bounds.zw + 0.001) - origin,
         );
     }
 

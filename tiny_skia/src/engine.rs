@@ -2,6 +2,7 @@ use crate::Primitive;
 use crate::core::renderer::Quad;
 use crate::core::{
     Background, Color, Gradient, Rectangle, Size, Transformation, Vector,
+    border,
 };
 use crate::graphics::{Image, Text};
 use crate::text;
@@ -36,6 +37,18 @@ impl Engine {
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
     ) {
+        // A snapped quad lands on whole pixels, so that its edges stay crisp
+        // instead of bleeding into their neighbors. This is what makes single
+        // pixel details survive in a pixel art interface.
+        let quad = &Quad {
+            bounds: if quad.snap {
+                snap(quad.bounds, transformation)
+            } else {
+                quad.bounds
+            },
+            ..*quad
+        };
+
         let physical_bounds = quad.bounds * transformation;
 
         if !clip_bounds.intersects(&physical_bounds) {
@@ -324,6 +337,7 @@ impl Engine {
         pixels: &mut tiny_skia::PixmapMut<'_>,
         clip_mask: &mut tiny_skia::Mask,
         clip_bounds: Rectangle,
+        snap: bool,
     ) {
         match text {
             Text::Paragraph {
@@ -363,6 +377,7 @@ impl Engine {
                     pixels,
                     clip_mask,
                     transformation,
+                    snap,
                 );
             }
             Text::Editor {
@@ -401,6 +416,7 @@ impl Engine {
                     pixels,
                     clip_mask,
                     transformation,
+                    snap,
                 );
             }
             Text::Cached {
@@ -442,6 +458,7 @@ impl Engine {
                     pixels,
                     clip_mask,
                     transformation,
+                    snap,
                 );
             }
             Text::Raw {
@@ -477,6 +494,7 @@ impl Engine {
                     pixels,
                     clip_mask,
                     transformation,
+                    snap,
                 );
             }
         }
@@ -562,15 +580,42 @@ impl Engine {
     ) {
         match image {
             #[cfg(feature = "image")]
-            Image::Raster { image, bounds, .. } => {
-                let physical_bounds = *bounds * _transformation;
+            Image::Raster {
+                image,
+                bounds,
+                clip_bounds,
+            } => {
+                // A snapped image lands on whole pixels, just like a snapped
+                // quad. Its size is snapped as well, so that an image drawn at
+                // an integer scale samples exactly one texel per pixel with
+                // `FilterMethod::Nearest`.
+                let bounds = if image.snap {
+                    snap(*bounds, _transformation)
+                } else {
+                    *bounds
+                };
 
-                if !_clip_bounds.intersects(&physical_bounds) {
+                let physical_bounds = bounds * _transformation;
+                let image_bounds = *clip_bounds * _transformation;
+
+                // A rotation paints outside the bounds of the image, so the
+                // area it actually covers is what decides both culling and
+                // whether a clip mask is needed.
+                let drawn_bounds = physical_bounds.rotate(image.rotation);
+
+                let Some(clip_bounds) =
+                    image_clip_bounds(_clip_bounds, drawn_bounds, image_bounds)
+                else {
                     return;
-                }
+                };
 
-                let clip_mask = (!physical_bounds.is_within(&_clip_bounds))
-                    .then_some(_clip_mask as &_);
+                let clip_mask = clip_image(
+                    _clip_mask,
+                    drawn_bounds,
+                    clip_bounds,
+                    image_bounds,
+                    image.border_radius * _transformation.scale_factor(),
+                );
 
                 let center = physical_bounds.center();
                 let radians = f32::from(image.rotation);
@@ -584,7 +629,7 @@ impl Engine {
                 self.raster_pipeline.draw(
                     &image.handle,
                     image.filter_method,
-                    *bounds,
+                    bounds,
                     image.opacity,
                     _pixels,
                     transform,
@@ -592,32 +637,42 @@ impl Engine {
                 );
             }
             #[cfg(feature = "svg")]
-            Image::Vector { svg, bounds, .. } => {
+            Image::Vector {
+                svg,
+                bounds,
+                clip_bounds,
+            } => {
                 let physical_bounds = *bounds * _transformation;
+                let image_bounds = *clip_bounds * _transformation;
 
-                if !_clip_bounds.intersects(&physical_bounds) {
+                let drawn_bounds = physical_bounds.rotate(svg.rotation);
+
+                let Some(clip_bounds) =
+                    image_clip_bounds(_clip_bounds, drawn_bounds, image_bounds)
+                else {
                     return;
-                }
+                };
 
-                let clip_mask = (!physical_bounds.is_within(&_clip_bounds))
-                    .then_some(_clip_mask as &_);
-
-                let center = physical_bounds.center();
-                let radians = f32::from(svg.rotation);
-
-                let transform = into_transform(_transformation).post_rotate_at(
-                    radians.to_degrees(),
-                    center.x,
-                    center.y,
+                let clip_mask = clip_image(
+                    _clip_mask,
+                    drawn_bounds,
+                    clip_bounds,
+                    image_bounds,
+                    border::Radius::default(),
                 );
 
+                // An SVG is rasterized at its device size, so the pipeline
+                // takes the __physical__ bounds and applies the rotation
+                // itself—the scale must not be folded into the matrix it
+                // reads, or a rotated icon comes out the wrong size.
                 self.vector_pipeline.draw(
                     &svg.handle,
                     svg.color,
-                    *bounds,
+                    physical_bounds,
                     svg.opacity,
                     _pixels,
-                    transform,
+                    f32::from(svg.rotation),
+                    svg.snap,
                     clip_mask,
                 );
             }
@@ -650,6 +705,101 @@ impl Engine {
 pub fn into_color(color: Color) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba(color.b, color.g, color.r, color.a)
         .expect("Convert color from iced to tiny_skia")
+}
+
+/// Intersects the clip bounds of a layer with the ones an image carries of its
+/// own, returning `None` when nothing of the image would be visible.
+///
+/// An image is clipped twice: by its layer, and by its own `clip_bounds`—which
+/// is what a [`ContentFit`] like `Cover` relies on to crop the overflow.
+///
+/// [`ContentFit`]: crate::core::ContentFit
+#[cfg(any(feature = "image", feature = "svg"))]
+fn image_clip_bounds(
+    layer_bounds: Rectangle,
+    physical_bounds: Rectangle,
+    clip_bounds: Rectangle,
+) -> Option<Rectangle> {
+    let clip_bounds = layer_bounds.intersection(&clip_bounds)?;
+
+    clip_bounds
+        .intersects(&physical_bounds)
+        .then_some(clip_bounds)
+}
+
+/// Prepares the clip mask of an image, returning `None` when it does not need
+/// one at all.
+///
+/// Besides the usual rectangular clipping, this is what rounds the corners of
+/// an image: `draw_pixmap` cannot do it by itself, so the rounded rectangle is
+/// cut out of the mask instead.
+#[cfg(any(feature = "image", feature = "svg"))]
+fn clip_image(
+    clip_mask: &mut tiny_skia::Mask,
+    drawn_bounds: Rectangle,
+    clip_bounds: Rectangle,
+    image_bounds: Rectangle,
+    border_radius: border::Radius,
+) -> Option<&tiny_skia::Mask> {
+    let mut radius = <[f32; 4]>::from(border_radius);
+
+    for radius in &mut radius {
+        *radius = radius
+            .min(image_bounds.width / 2.0)
+            .min(image_bounds.height / 2.0)
+            .max(0.0);
+    }
+
+    let is_rounded = radius.iter().any(|radius| *radius > 0.0);
+
+    if !is_rounded && drawn_bounds.is_within(&clip_bounds) {
+        return None;
+    }
+
+    adjust_clip_mask(clip_mask, clip_bounds);
+
+    if is_rounded {
+        // Like the `wgpu` renderer, the radius rounds the clip bounds of the
+        // image rather than the image itself.
+        clip_mask.intersect_path(
+            &rounded_rectangle(image_bounds, radius),
+            tiny_skia::FillRule::EvenOdd,
+            true,
+            tiny_skia::Transform::identity(),
+        );
+    }
+
+    Some(clip_mask)
+}
+
+/// Adjusts `bounds` so that it lands on whole pixels once `transformation` is
+/// applied to it.
+///
+/// Both edges are rounded independently, which keeps the size of a quad within
+/// a pixel of its original one—instead of letting rounding errors accumulate
+/// on the far edge.
+fn snap(bounds: Rectangle, transformation: Transformation) -> Rectangle {
+    let scale = transformation.scale_factor();
+
+    if scale <= 0.0 {
+        return bounds;
+    }
+
+    let physical = bounds * transformation;
+
+    // The bias breaks ties away from zero consistently, matching the `wgpu`
+    // renderer.
+    const BIAS: f32 = 0.001;
+
+    let x = (physical.x + BIAS).round();
+    let y = (physical.y + BIAS).round();
+
+    Rectangle {
+        x: bounds.x + (x - physical.x) / scale,
+        y: bounds.y + (y - physical.y) / scale,
+        width: ((physical.x + physical.width + BIAS).round() - x) / scale,
+        height: ((physical.y + physical.height + BIAS).round() - y) / scale,
+    }
 }
 
 fn into_transform(transformation: Transformation) -> tiny_skia::Transform {

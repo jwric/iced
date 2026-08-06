@@ -1,0 +1,10 @@
+[package]
+name = "pixel_art"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+iced.workspace = true
+# `image-without-codecs` is enough: the sprite is built from raw RGBA.
+iced.features = ["advanced", "image-without-codecs"]

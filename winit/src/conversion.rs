@@ -170,7 +170,7 @@ pub fn window_event(
     event: winit::event::WindowEvent,
     scale_factor: f32,
     modifiers: winit::keyboard::ModifiersState,
-    pixel_scale: u32,
+    layout_units_per_dip: f32,
 ) -> Option<Event> {
     use winit::event::Ime;
     use winit::event::WindowEvent;
@@ -188,21 +188,11 @@ pub fn window_event(
             Some(Event::Window(window::Event::CloseRequested))
         }
         WindowEvent::CursorMoved { position, .. } => {
-            // When pixel scaling is enabled, use physical coordinates directly
-            // to match the downscaled rendering space
-            let position = if pixel_scale > 1 {
-                Point::new(
-                    (position.x as f32) / (pixel_scale as f32),
-                    (position.y as f32) / (pixel_scale as f32),
-                )
-            } else {
-                // Normal case: convert to logical coordinates using DPI scale
-                let logical =
-                    position.to_logical::<f64>(f64::from(scale_factor));
-                Point::new(logical.x as f32, logical.y as f32)
-            };
+            let position = position.to_logical::<f64>(f64::from(scale_factor));
 
-            Some(Event::Mouse(mouse::Event::CursorMoved { position }))
+            Some(Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(position.x as f32, position.y as f32),
+            }))
         }
         WindowEvent::CursorEntered { .. } => {
             Some(Event::Mouse(mouse::Event::CursorEntered))
@@ -355,7 +345,11 @@ pub fn window_event(
             Some(Event::Window(window::Event::FilesHoveredLeft))
         }
         WindowEvent::Touch(touch) => {
-            Some(Event::Touch(touch_event(touch, scale_factor, pixel_scale)))
+            Some(Event::Touch(touch_event(
+                touch,
+                scale_factor,
+                layout_units_per_dip,
+            )))
         }
         WindowEvent::Moved(position) => {
             let winit::dpi::LogicalPosition { x, y } =
@@ -609,24 +603,14 @@ pub fn cursor_position(
 pub fn touch_event(
     touch: winit::event::Touch,
     scale_factor: f32,
-    pixel_scale: u32,
+    layout_units_per_dip: f32,
 ) -> touch::Event {
     let id = touch::Finger(touch.id);
-    let (position, layout_units_per_dip) = if pixel_scale > 1 {
-        // When pixel scaling is enabled, use physical coordinates directly
-        (
-            Point::new(
-                (touch.location.x as f32) / (pixel_scale as f32),
-                (touch.location.y as f32) / (pixel_scale as f32),
-            ),
-            scale_factor / pixel_scale as f32,
-        )
-    } else {
-        // Normal case: convert to logical coordinates using DPI scale
+    let position = {
         let location =
             touch.location.to_logical::<f64>(f64::from(scale_factor));
 
-        (Point::new(location.x as f32, location.y as f32), 1.0)
+        Point::new(location.x as f32, location.y as f32)
     };
 
     match touch.phase {

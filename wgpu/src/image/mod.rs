@@ -346,7 +346,7 @@ impl State {
                             border::radius(0),
                             f32::from(svg.rotation),
                             svg.opacity,
-                            true,
+                            svg.snap,
                             atlas_entry,
                             &mut self.nearest_instances,
                         );

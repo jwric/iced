@@ -63,6 +63,7 @@ where
     class: Theme::Class<'a>,
     rotation: Rotation,
     opacity: f32,
+    snap: bool,
     status: Option<Status>,
 }
 
@@ -80,6 +81,7 @@ where
             class: Theme::default(),
             rotation: Rotation::default(),
             opacity: 1.0,
+            snap: true,
             status: None,
         }
     }
@@ -146,6 +148,16 @@ where
     /// and `1.0` meaning completely opaque.
     pub fn opacity(mut self, opacity: impl Into<f32>) -> Self {
         self.opacity = opacity.into();
+        self
+    }
+
+    /// Sets whether the [`Svg`] should be snapped to the pixel grid.
+    ///
+    /// By default, it is snapped—which keeps the edges of an icon crisp and
+    /// aligned with the widgets around it. Disable it when the [`Svg`] moves
+    /// continuously, since snapping makes it jump by whole pixels.
+    pub fn snap(mut self, snap: bool) -> Self {
+        self.snap = snap;
         self
     }
 }
@@ -266,6 +278,7 @@ where
                 color: style.color,
                 rotation: self.rotation.radians(),
                 opacity: self.opacity,
+                snap: self.snap,
             },
             drawing_bounds,
             bounds,

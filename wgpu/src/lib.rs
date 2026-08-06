@@ -408,6 +408,7 @@ impl Renderer {
                     &layer.text,
                     layer.bounds,
                     Transformation::scale(scale_factor),
+                    viewport.pixel_scale() > 1,
                 );
 
                 prepare_span.finish();
