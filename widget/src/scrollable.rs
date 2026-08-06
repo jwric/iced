@@ -1637,6 +1637,12 @@ fn notify_viewport<Message>(
     if content_bounds.width <= bounds.width
         && content_bounds.height <= bounds.height
     {
+        // Content that fits produces no notification, so the last notified
+        // viewport no longer describes this content. Keeping it would let a
+        // later layout that coincides with the stale record suppress its
+        // first notification forever.
+        state.last_notified = None;
+
         return false;
     }
 
