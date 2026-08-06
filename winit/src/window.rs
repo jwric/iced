@@ -337,12 +337,12 @@ fn publish_web_ime(
     let Some(root) = document.document_element() else {
         return;
     };
+    // A secure field is the only one the text agent treats differently; every
+    // other purpose is plain text as far as it is concerned. Matching the rest
+    // with a wildcard also keeps this compiling as `Purpose` grows.
     let state = match request {
         Some((input_method::Purpose::Secure, _)) => "secure",
-        Some((
-            input_method::Purpose::Normal | input_method::Purpose::Terminal,
-            _,
-        )) => "text",
+        Some(_) => "text",
         None => "disabled",
     };
     let _ = root.set_attribute("data-iced-ime", state);
