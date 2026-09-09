@@ -1,6 +1,7 @@
 //! Build and draw geometry.
 pub mod fill;
 pub mod frame;
+pub mod hairline;
 pub mod path;
 pub mod stroke;
 
