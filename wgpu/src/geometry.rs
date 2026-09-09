@@ -129,6 +129,27 @@ impl Frame {
             stroke_tessellator: tessellation::StrokeTessellator::new(),
         }
     }
+
+    /// Fills the pixels a one-pixel stroke of `path` covers.
+    fn fill_spans(&mut self, path: &Path, style: Style) {
+        let path = if self.transforms.current.is_identity() {
+            Cow::Borrowed(path)
+        } else {
+            Cow::Owned(path.transform(&self.transforms.current.0))
+        };
+
+        let mut buffer = self
+            .buffers
+            .get_fill(&self.transforms.current.transform_style(style));
+
+        self.fill_tessellator
+            .tessellate_path(
+                geometry::hairline::spans(&path).raw(),
+                &tessellation::FillOptions::default(),
+                buffer.as_mut(),
+            )
+            .expect("Tessellate pixel spans.");
+    }
 }
 
 impl geometry::frame::Backend for Frame {
@@ -220,6 +241,11 @@ impl geometry::frame::Backend for Frame {
     fn stroke<'a>(&mut self, path: &Path, stroke: impl Into<Stroke<'a>>) {
         let stroke = stroke.into();
 
+        if geometry::hairline::applies(&stroke) {
+            self.fill_spans(path, stroke.style);
+            return;
+        }
+
         let mut buffer = self
             .buffers
             .get_stroke(&self.transforms.current.transform_style(stroke.style));
@@ -261,6 +287,11 @@ impl geometry::frame::Backend for Frame {
         stroke: impl Into<Stroke<'a>>,
     ) {
         let stroke = stroke.into();
+
+        if geometry::hairline::applies(&stroke) {
+            self.fill_spans(&Path::rectangle(top_left, size), stroke.style);
+            return;
+        }
 
         let mut buffer = self
             .buffers

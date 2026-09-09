@@ -21,6 +21,7 @@ all-features = true
 geometry = ["lyon_path"]
 image = ["dep:image", "kamadak-exif"]
 svg = []
+crisp = []
 web-colors = []
 fira-sans = []
 

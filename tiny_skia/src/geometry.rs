@@ -74,6 +74,29 @@ impl Frame {
             transform: tiny_skia::Transform::identity(),
         }
     }
+
+    /// Fills the pixels a one-pixel stroke of `path` covers.
+    fn fill_spans(&mut self, path: &Path, style: Style) {
+        let spans = geometry::hairline::spans(
+            &path.transform(&into_lyon_transform(self.transform)),
+        );
+
+        let Some(path) = convert_path(&spans) else {
+            return;
+        };
+
+        let mut paint = tiny_skia::Paint {
+            anti_alias: false,
+            ..into_paint(style)
+        };
+        paint.shader.transform(self.transform);
+
+        self.primitives.push(Primitive::Fill {
+            path,
+            paint,
+            rule: tiny_skia::FillRule::Winding,
+        });
+    }
 }
 
 impl geometry::frame::Backend for Frame {
@@ -142,13 +165,19 @@ impl geometry::frame::Backend for Frame {
     }
 
     fn stroke<'a>(&mut self, path: &Path, stroke: impl Into<Stroke<'a>>) {
+        let stroke = stroke.into();
+
+        if geometry::hairline::applies(&stroke) {
+            self.fill_spans(path, stroke.style);
+            return;
+        }
+
         let Some(path) =
             convert_path(path).and_then(|path| path.transform(self.transform))
         else {
             return;
         };
 
-        let stroke = stroke.into();
         let skia_stroke = into_stroke(&stroke);
 
         let mut paint = into_paint(stroke.style);
@@ -358,6 +387,22 @@ fn transform_rectangle(
         Point::new(top_right.x, top_right.y),
         Point::new(bottom_left.x, bottom_left.y),
     )
+}
+
+/// The same affine map, in the form a [`Path`] can be transformed by.
+fn into_lyon_transform(
+    transform: tiny_skia::Transform,
+) -> geometry::path::lyon_path::math::Transform {
+    let tiny_skia::Transform {
+        sx,
+        kx,
+        ky,
+        sy,
+        tx,
+        ty,
+    } = transform;
+
+    geometry::path::lyon_path::math::Transform::new(sx, ky, kx, sy, tx, ty)
 }
 
 fn convert_path(path: &Path) -> Option<tiny_skia::Path> {

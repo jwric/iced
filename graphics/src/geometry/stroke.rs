@@ -21,6 +21,14 @@ pub struct Stroke<'a> {
     pub line_join: LineJoin,
     /// The dash pattern used when stroking the line.
     pub line_dash: LineDash<'a>,
+    /// Whether the [`Stroke`] should be snapped to the pixel grid.
+    ///
+    /// A snapped stroke one pixel wide covers one pixel at every angle: it is
+    /// drawn as the pixels a rasterizer would light rather than as a ribbon of
+    /// constant perpendicular width, which measures more than a pixel across
+    /// an axis anywhere but along one. Wider strokes and dashed ones are
+    /// drawn the same either way.
+    pub snap: bool,
 }
 
 impl Stroke<'_> {
@@ -46,6 +54,11 @@ impl Stroke<'_> {
     pub fn with_line_join(self, line_join: LineJoin) -> Self {
         Stroke { line_join, ..self }
     }
+
+    /// Sets whether the [`Stroke`] is snapped to the pixel grid.
+    pub fn with_snap(self, snap: bool) -> Self {
+        Stroke { snap, ..self }
+    }
 }
 
 impl Default for Stroke<'_> {
@@ -56,6 +69,7 @@ impl Default for Stroke<'_> {
             line_cap: LineCap::default(),
             line_join: LineJoin::default(),
             line_dash: LineDash::default(),
+            snap: cfg!(feature = "crisp"),
         }
     }
 }
