@@ -254,7 +254,11 @@ impl svg::Renderer for () {
 }
 
 impl renderer::Headless for () {
-    async fn new(_settings: renderer::Settings, _backend: Option<&str>) -> Option<Self>
+    async fn new(
+        _settings: renderer::Settings,
+        _antialiasing: bool,
+        _backend: Option<&str>,
+    ) -> Option<Self>
     where
         Self: Sized,
     {

@@ -101,6 +101,7 @@ impl<P: Program + 'static> Emulator<P> {
         let renderer = executor
             .block_on(P::Renderer::new(
                 renderer::Settings::from(&settings),
+                settings.antialiasing,
                 backend.as_deref(),
             ))
             .expect("Create emulator renderer");

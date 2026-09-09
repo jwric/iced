@@ -21,6 +21,7 @@ const SCALE: f32 = 2.0;
 pub fn benchmark(c: &mut Criterion) {
     let mut renderer = executor::block_on(Renderer::new(
         renderer::Settings::default(),
+        true,
         Some("software"),
     ))
     .expect("software renderer must be available");

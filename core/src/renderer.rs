@@ -142,7 +142,17 @@ impl Default for Style {
 /// a window nor a compositor.
 pub trait Headless {
     /// Creates a new [`Headless`] renderer;
-    fn new(settings: Settings, backend: Option<&str>) -> impl Future<Output = Option<Self>>
+    ///
+    /// `antialiasing` matches [`Settings::antialiasing`]: a renderer that
+    /// smooths some primitives, like the ones a canvas draws, only does so
+    /// when it is set.
+    ///
+    /// [`Settings::antialiasing`]: crate::Settings::antialiasing
+    fn new(
+        settings: Settings,
+        antialiasing: bool,
+        backend: Option<&str>,
+    ) -> impl Future<Output = Option<Self>>
     where
         Self: Sized;
 

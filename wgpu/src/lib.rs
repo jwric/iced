@@ -892,7 +892,11 @@ impl graphics::compositor::Default for crate::Renderer {
 }
 
 impl renderer::Headless for Renderer {
-    async fn new(settings: renderer::Settings, backend: Option<&str>) -> Option<Self> {
+    async fn new(
+        settings: renderer::Settings,
+        antialiasing: bool,
+        backend: Option<&str>,
+    ) -> Option<Self> {
         if backend.is_some_and(|backend| backend != "wgpu") {
             return None;
         }
@@ -936,7 +940,7 @@ impl renderer::Headless for Renderer {
             } else {
                 wgpu::TextureFormat::Rgba8Unorm
             },
-            Some(graphics::Antialiasing::MSAAx4),
+            antialiasing.then_some(graphics::Antialiasing::MSAAx4),
             Shell::headless(),
         );
 

@@ -28,6 +28,7 @@ pub struct Simulator<'a, Message, Theme = core::Theme, Renderer = renderer::Rend
     raw: UserInterface<'a, Message, Theme, Renderer>,
     renderer: Renderer,
     size: Size,
+    scale_factor: f32,
     cursor: mouse::Cursor,
     messages: shell::Bus<Message>,
 }
@@ -73,9 +74,20 @@ where
                     line_height: settings.line_height,
                     metrics_hinting: settings.metrics_hinting,
                 },
+                settings.antialiasing,
                 backend.as_deref(),
             ))
             .expect("Create new headless renderer")
+        };
+
+        // A pixel scale is applied by upscaling the rendered image with
+        // nearest-neighbor filtering, so the interface is laid out and
+        // rasterized in virtual pixels at a scale factor of 1. Snapshotting it
+        // at any other scale factor would picture a grid no display shows.
+        let scale_factor = if settings.pixel_scale.is_disabled() {
+            2.0
+        } else {
+            1.0
         };
 
         let raw = UserInterface::build(
@@ -89,6 +101,7 @@ where
             raw,
             renderer,
             size,
+            scale_factor,
             cursor: mouse::Cursor::Unavailable,
             messages: shell::Bus::new(),
         }
@@ -141,6 +154,7 @@ where
             raw: UserInterface::build(element, self.size, cache, &mut self.renderer),
             renderer: self.renderer,
             size: self.size,
+            scale_factor: self.scale_factor,
             cursor: self.cursor,
             messages: self.messages,
         }
@@ -262,7 +276,7 @@ where
 
         self.draw(theme);
 
-        let scale_factor = 2.0;
+        let scale_factor = self.scale_factor;
 
         let physical_size = Size::new(
             (self.size.width * scale_factor).round() as u32,

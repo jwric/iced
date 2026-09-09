@@ -599,12 +599,18 @@ where
     A: renderer::Headless,
     B: renderer::Headless,
 {
-    async fn new(settings: renderer::Settings, backend: Option<&str>) -> Option<Self> {
-        if let Some(renderer) = A::new(settings, backend).await {
+    async fn new(
+        settings: renderer::Settings,
+        antialiasing: bool,
+        backend: Option<&str>,
+    ) -> Option<Self> {
+        if let Some(renderer) = A::new(settings, antialiasing, backend).await {
             return Some(Self::Primary(renderer));
         }
 
-        B::new(settings, backend).await.map(Self::Secondary)
+        B::new(settings, antialiasing, backend)
+            .await
+            .map(Self::Secondary)
     }
 
     fn name(&self) -> String {
