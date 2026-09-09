@@ -99,6 +99,7 @@ impl<P: Program + 'static> Emulator<P> {
             .block_on(P::Renderer::new(
                 settings.default_font,
                 settings.default_text_size,
+                settings.antialiasing,
                 None,
             ))
             .expect("Create emulator renderer");

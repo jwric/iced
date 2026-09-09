@@ -441,6 +441,7 @@ impl renderer::Headless for Renderer {
     async fn new(
         default_font: Font,
         default_text_size: Pixels,
+        _antialiasing: bool,
         backend: Option<&str>,
     ) -> Option<Self> {
         if backend.is_some_and(|backend| {

@@ -264,6 +264,7 @@ impl renderer::Headless for () {
     async fn new(
         _default_font: Font,
         _default_text_size: Pixels,
+        _antialiasing: bool,
         _backend: Option<&str>,
     ) -> Option<Self>
     where

@@ -915,6 +915,7 @@ impl renderer::Headless for Renderer {
     async fn new(
         default_font: Font,
         default_text_size: Pixels,
+        antialiasing: bool,
         backend: Option<&str>,
     ) -> Option<Self> {
         if backend.is_some_and(|backend| backend != "wgpu") {
@@ -961,7 +962,7 @@ impl renderer::Headless for Renderer {
             } else {
                 wgpu::TextureFormat::Rgba8Unorm
             },
-            Some(graphics::Antialiasing::MSAAx4),
+            antialiasing.then_some(graphics::Antialiasing::MSAAx4),
             Shell::headless(),
         );
 

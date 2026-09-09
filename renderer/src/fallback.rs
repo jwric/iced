@@ -685,15 +685,16 @@ where
     async fn new(
         default_font: Font,
         default_text_size: Pixels,
+        antialiasing: bool,
         backend: Option<&str>,
     ) -> Option<Self> {
         if let Some(renderer) =
-            A::new(default_font, default_text_size, backend).await
+            A::new(default_font, default_text_size, antialiasing, backend).await
         {
             return Some(Self::Primary(renderer));
         }
 
-        B::new(default_font, default_text_size, backend)
+        B::new(default_font, default_text_size, antialiasing, backend)
             .await
             .map(Self::Secondary)
     }
