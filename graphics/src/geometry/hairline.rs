@@ -19,34 +19,66 @@ pub fn applies(stroke: &Stroke<'_>) -> bool {
     stroke.snap && stroke.width <= 1.0 && stroke.line_dash.segments.is_empty()
 }
 
-/// The pixels a one-pixel-wide stroke of `path` covers, as a set of
-/// axis-aligned rectangles on integer coordinates.
+/// One row of pixels a one-pixel-wide stroke covers: the row, and the first
+/// and last column of an unbroken run along it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Run {
+    /// The row, as a pixel index.
+    pub y: i32,
+    /// The first column of the run.
+    pub start: i32,
+    /// The last column of the run, inclusive.
+    pub end: i32,
+}
+
+impl Run {
+    /// The run as a rectangle in device space.
+    pub fn rectangle(self) -> (Point, Size) {
+        (
+            Point::new(self.start as f32, self.y as f32),
+            Size::new((self.end - self.start + 1) as f32, 1.0),
+        )
+    }
+}
+
+/// The pixels a one-pixel-wide stroke of `path` covers, as runs along rows.
 ///
-/// Filling the result lights the pixels a rasterizer walking `path` would:
-/// one per step along each segment's major axis, none twice. Stroking builds a
+/// Filling the runs lights the pixels a rasterizer walking `path` would: one
+/// per step along each segment's major axis, none twice. Stroking builds a
 /// ribbon of constant *perpendicular* width instead, which measures
 /// `1 / cos θ` across an axis and so covers two pixels at some angles.
+/// Neighbours in a row become one run, so a shallow line costs a handful of
+/// quads instead of one per pixel. Every run is an axis-aligned rectangle,
+/// so a backend can fill them as quads without a general tessellation.
 ///
 /// `path` must already be in device space, where a pixel is the unit square
 /// and the centre of the pixel at `(i, j)` is `(i + 0.5, j + 0.5)`.
-pub fn spans(path: &Path) -> Path {
-    // Neighbours in a row become one rectangle, so a shallow line costs a
-    // handful of quads instead of one per pixel.
-    let mut runs: Vec<(i32, i32, i32)> = Vec::new();
+pub fn runs(path: &Path) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
 
     for (x, y) in pixels(path) {
         match runs.last_mut() {
-            Some((row, _, end)) if *row == y && x == *end + 1 => *end = x,
-            _ => runs.push((y, x, x)),
+            Some(run) if run.y == y && x == run.end + 1 => run.end = x,
+            _ => runs.push(Run {
+                y,
+                start: x,
+                end: x,
+            }),
         }
     }
 
+    runs
+}
+
+/// The [`runs`] of `path` as one path of rectangles, for a backend that fills
+/// paths.
+pub fn spans(path: &Path) -> Path {
+    let runs = runs(path);
+
     Path::new(|builder| {
-        for (y, start, end) in runs {
-            builder.rectangle(
-                Point::new(start as f32, y as f32),
-                Size::new((end - start + 1) as f32, 1.0),
-            );
+        for run in runs {
+            let (top_left, size) = run.rectangle();
+            builder.rectangle(top_left, size);
         }
     })
 }

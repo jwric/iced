@@ -134,13 +134,24 @@ impl Frame {
             .buffers
             .get_fill(&self.transforms.current.transform_style(style));
 
-        self.fill_tessellator
-            .tessellate_path(
-                geometry::hairline::spans(&path).raw(),
-                &tessellation::FillOptions::default(),
-                buffer.as_mut(),
-            )
-            .expect("Tessellate pixel spans.");
+        // Every run is an axis-aligned rectangle: two triangles each, with
+        // no sweep over the thousands of edges a long trace would put
+        // through the general tessellator.
+        let options = tessellation::FillOptions::default();
+
+        for run in geometry::hairline::runs(&path) {
+            let (top_left, size) = run.rectangle();
+            let top_left = lyon::math::Point::new(top_left.x, top_left.y);
+            let size = lyon::math::Vector::new(size.width, size.height);
+
+            self.fill_tessellator
+                .tessellate_rectangle(
+                    &lyon::math::Box2D::new(top_left, top_left + size),
+                    &options,
+                    buffer.as_mut(),
+                )
+                .expect("Tessellate pixel run.");
+        }
     }
 }
 
