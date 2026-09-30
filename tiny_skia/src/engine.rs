@@ -241,8 +241,59 @@ impl Engine {
                 .min(border_bounds.height / 2.0);
             }
 
-            // Stroking a path works well in this case
-            if is_simple_border {
+            let is_square = border_radius.iter().all(|radius| *radius == 0.0);
+
+            if is_simple_border && is_square {
+                // A stroke a pixel wide is drawn as a hairline, whose ends
+                // only half cover the corner pixels. A square border is the
+                // quad less its interior instead, filled, so its corners are
+                // as solid as its sides.
+                let inner = Rectangle {
+                    x: quad.bounds.x + border_width,
+                    y: quad.bounds.y + border_width,
+                    width: quad.bounds.width - 2.0 * border_width,
+                    height: quad.bounds.height - 2.0 * border_width,
+                };
+
+                let mut builder = tiny_skia::PathBuilder::new();
+
+                if let Some(outer) = tiny_skia::Rect::from_xywh(
+                    quad.bounds.x,
+                    quad.bounds.y,
+                    quad.bounds.width,
+                    quad.bounds.height,
+                ) {
+                    builder.push_rect(outer);
+                }
+
+                if inner.width > 0.0 && inner.height > 0.0 {
+                    if let Some(inner) = tiny_skia::Rect::from_xywh(
+                        inner.x,
+                        inner.y,
+                        inner.width,
+                        inner.height,
+                    ) {
+                        builder.push_rect(inner);
+                    }
+                }
+
+                if let Some(border_path) = builder.finish() {
+                    pixels.fill_path(
+                        &border_path,
+                        &tiny_skia::Paint {
+                            shader: tiny_skia::Shader::SolidColor(into_color(
+                                quad.border.color,
+                            )),
+                            anti_alias: true,
+                            ..tiny_skia::Paint::default()
+                        },
+                        tiny_skia::FillRule::EvenOdd,
+                        transform,
+                        clip_mask,
+                    );
+                }
+            } else if is_simple_border {
+                // Stroking a path works well in this case
                 let border_path =
                     rounded_rectangle(border_bounds, border_radius);
 
