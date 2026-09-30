@@ -67,6 +67,11 @@ impl Renderer {
         background_color: Color,
     ) {
         let scale_factor = viewport.scale_factor();
+
+        // Pixel art is drawn to a low resolution framebuffer that gets
+        // upscaled afterwards, so primitives must land on whole pixels.
+        let snap = viewport.pixel_scale() > 1;
+
         self.layers.flush();
 
         for &damage_bounds in damage {
@@ -173,6 +178,7 @@ impl Renderer {
                                 pixels,
                                 clip_mask,
                                 layer_bounds,
+                                snap,
                             );
                         }
                     }

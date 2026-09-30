@@ -1,6 +1,6 @@
 use crate::conversion;
 use crate::core::renderer;
-use crate::core::{Color, Size};
+use crate::core::{Color, PixelScaleMode, Size};
 use crate::core::{mouse, theme, window};
 use crate::graphics::Viewport;
 use crate::program::{self, Program};
@@ -24,6 +24,8 @@ where
     theme_mode: theme::Mode,
     default_theme: P::Theme,
     style: theme::Style,
+    scale: renderer::Scale,
+    pixel_scale_mode: PixelScaleMode,
 }
 
 impl<P: Program> Debug for State<P>
@@ -50,6 +52,7 @@ where
         window_id: window::Id,
         window: &Window,
         system_theme: theme::Mode,
+        pixel_scale_mode: PixelScaleMode,
     ) -> Self {
         let title = program.title(window_id);
         let scale_factor = program.scale_factor(window_id);
@@ -58,15 +61,18 @@ where
         let default_theme = <P::Theme as theme::Base>::default(system_theme);
         let style = program.style(theme.as_ref().unwrap_or(&default_theme));
 
+        let scale = renderer::Scale {
+            window: window.scale_factor() as f32,
+            application: scale_factor,
+        };
+
         let viewport = {
             let physical_size = window.inner_size();
 
-            Viewport::with_physical_size(
+            viewport(
                 Size::new(physical_size.width, physical_size.height),
-                renderer::Scale {
-                    window: window.scale_factor() as f32,
-                    application: scale_factor,
-                },
+                scale,
+                pixel_scale_mode,
             )
         };
 
@@ -80,6 +86,8 @@ where
             theme_mode,
             default_theme,
             style,
+            scale,
+            pixel_scale_mode,
         }
     }
 
@@ -99,8 +107,12 @@ where
         self.viewport.logical_size()
     }
 
+    /// Returns the [`renderer::Scale`] the renderer of the window draws at.
+    ///
+    /// When pixel scaling is enabled, this is the scale of the low resolution
+    /// framebuffer that gets upscaled; not the one of the window.
     pub fn scale(&self) -> renderer::Scale {
-        self.viewport.scale()
+        self.viewport.target().scale()
     }
 
     pub fn scale_factor(&self) -> f32 {
@@ -141,13 +153,8 @@ where
             WindowEvent::Resized(new_size) => {
                 let size = Size::new(new_size.width, new_size.height);
 
-                self.viewport = Viewport::with_physical_size(
-                    size,
-                    renderer::Scale {
-                        window: window.scale_factor() as f32,
-                        application: self.viewport.scale().application,
-                    },
-                );
+                self.scale.window = window.scale_factor() as f32;
+                self.viewport = viewport(size, self.scale, self.pixel_scale_mode);
                 self.surface_version += 1;
             }
             WindowEvent::ScaleFactorChanged {
@@ -156,13 +163,8 @@ where
             } => {
                 let size = self.viewport.physical_size();
 
-                self.viewport = Viewport::with_physical_size(
-                    size,
-                    renderer::Scale {
-                        window: *new_scale_factor as f32,
-                        application: self.viewport.scale().application,
-                    },
-                );
+                self.scale.window = *new_scale_factor as f32;
+                self.viewport = viewport(size, self.scale, self.pixel_scale_mode);
                 self.surface_version += 1;
             }
             WindowEvent::CursorMoved { position, .. }
@@ -207,13 +209,16 @@ where
         // Update scale factor
         let new_scale_factor = program.scale_factor(window_id);
 
-        if self.viewport.scale().application != new_scale_factor {
-            self.viewport = Viewport::with_physical_size(
+        if self.scale.application != new_scale_factor {
+            self.scale = renderer::Scale {
+                window: window.scale_factor() as f32,
+                application: new_scale_factor,
+            };
+
+            self.viewport = viewport(
                 self.viewport.physical_size(),
-                renderer::Scale {
-                    window: window.scale_factor() as f32,
-                    application: new_scale_factor,
-                },
+                self.scale,
+                self.pixel_scale_mode,
             );
         }
 
@@ -258,5 +263,21 @@ where
 
             self.theme_mode = new_mode;
         }
+    }
+}
+
+/// Builds the [`Viewport`] of a window of the given physical `size`.
+///
+/// When `pixel_scale_mode` resolves to a pixel scale greater than 1, the
+/// resulting [`Viewport`] renders to a low resolution framebuffer that a
+/// compositor upscales with nearest-neighbor filtering. The pixel scale then
+/// __replaces__ `scale`, which is only used to derive it.
+fn viewport(size: Size<u32>, scale: renderer::Scale, pixel_scale_mode: PixelScaleMode) -> Viewport {
+    let pixel_scale = pixel_scale_mode.resolve(scale.total());
+
+    if pixel_scale > 1 {
+        Viewport::with_pixel_scale(size, pixel_scale)
+    } else {
+        Viewport::with_physical_size(size, scale)
     }
 }

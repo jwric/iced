@@ -3,7 +3,7 @@ use crate::core::renderer;
 use crate::core::{Color, Rectangle, Size};
 use crate::graphics::compositor::{self, Information};
 use crate::graphics::damage;
-use crate::graphics::{Shell, Viewport};
+use crate::graphics::{self, Shell, Viewport};
 use crate::{Layer, Renderer};
 
 use std::collections::VecDeque;
@@ -18,6 +18,9 @@ pub struct Surface {
     clip_mask: tiny_skia::Mask,
     frames: VecDeque<Frame>,
     max_age: u8,
+    /// The low resolution framebuffer drawn to when pixel scaling is enabled,
+    /// which is then upscaled onto the window.
+    framebuffer: Option<tiny_skia::Pixmap>,
 }
 
 #[derive(Clone)]
@@ -66,6 +69,7 @@ impl crate::graphics::Compositor for Compositor {
             clip_mask: tiny_skia::Mask::new(1, 1).expect("Create clip mask"),
             frames: VecDeque::new(),
             max_age: 0,
+            framebuffer: None,
         };
 
         if width > 0 && height > 0 {
@@ -84,7 +88,8 @@ impl crate::graphics::Compositor for Compositor {
             )
             .expect("Resize surface");
 
-        surface.clip_mask = tiny_skia::Mask::new(width, height).expect("Create clip mask");
+        // The clip mask and the framebuffer are sized against the render
+        // target, which `present` is the first to know about.
         surface.frames.clear();
     }
 
@@ -138,6 +143,16 @@ pub fn present(
     on_pre_present: impl FnOnce(),
 ) -> Result<(), compositor::SurfaceError> {
     let physical_size = viewport.physical_size();
+    let pixel_scale = viewport.pixel_scale();
+
+    // When pixel scaling is enabled, the scene is drawn to a low resolution
+    // framebuffer that is then upscaled onto the window.
+    let target = viewport.target();
+    let target_size = target.physical_size();
+
+    // A freshly allocated framebuffer has nothing to reuse, no matter how
+    // young the contents of the window are.
+    let is_stale = prepare(surface, target_size, pixel_scale);
 
     let mut buffer = surface
         .window
@@ -150,7 +165,7 @@ pub fn present(
         surface.max_age = surface.max_age.max(age);
         surface.frames.truncate(surface.max_age as usize);
 
-        if age > 0 {
+        if age > 0 && !is_stale {
             surface.frames.get(age as usize - 1)
         } else {
             None
@@ -168,7 +183,7 @@ pub fn present(
                 )
             })
         })
-        .unwrap_or_else(|| vec![Rectangle::with_size(viewport.logical_size())]);
+        .unwrap_or_else(|| vec![Rectangle::with_size(target.logical_size())]);
 
     if damage.is_empty() {
         if let Some(last_frame) = last_frame {
@@ -180,26 +195,94 @@ pub fn present(
             layers: renderer.layers().to_vec(),
         });
 
-        let damage = damage::group(damage, Rectangle::with_size(viewport.logical_size()));
+        let damage = damage::group(damage, Rectangle::with_size(target.logical_size()));
 
-        let mut pixels = tiny_skia::PixmapMut::from_bytes(
-            bytemuck::cast_slice_mut(&mut buffer),
-            physical_size.width,
-            physical_size.height,
-        )
-        .expect("Create pixel map");
+        match &mut surface.framebuffer {
+            Some(framebuffer) => {
+                renderer.draw(
+                    &mut framebuffer.as_mut(),
+                    &mut surface.clip_mask,
+                    &target,
+                    &damage,
+                    background,
+                );
 
-        renderer.draw(
-            &mut pixels,
-            &mut surface.clip_mask,
-            viewport,
-            &damage,
-            background,
-        );
+                let source: &[u32] = bytemuck::cast_slice(framebuffer.data());
+
+                for region in &damage {
+                    graphics::pixel_scale::upscale(
+                        source,
+                        target_size,
+                        &mut buffer,
+                        physical_size,
+                        pixel_scale,
+                        upscaled(*region, pixel_scale),
+                    );
+                }
+            }
+            None => {
+                let mut pixels = tiny_skia::PixmapMut::from_bytes(
+                    bytemuck::cast_slice_mut(&mut buffer),
+                    physical_size.width,
+                    physical_size.height,
+                )
+                .expect("Create pixel map");
+
+                renderer.draw(
+                    &mut pixels,
+                    &mut surface.clip_mask,
+                    &target,
+                    &damage,
+                    background,
+                );
+            }
+        }
     }
 
     on_pre_present();
     buffer.present().map_err(|_| compositor::SurfaceError::Lost)
+}
+
+/// Resizes the clip mask and the framebuffer of a [`Surface`] to fit a render
+/// target of `size`.
+///
+/// Returns whether the contents of the window must be redrawn in full.
+fn prepare(surface: &mut Surface, size: Size<u32>, pixel_scale: u32) -> bool {
+    let mut is_stale = false;
+
+    if surface.clip_mask.width() != size.width || surface.clip_mask.height() != size.height {
+        surface.clip_mask =
+            tiny_skia::Mask::new(size.width, size.height).expect("Create clip mask");
+    }
+
+    if pixel_scale > 1 {
+        if surface.framebuffer.as_ref().is_none_or(|framebuffer| {
+            framebuffer.width() != size.width || framebuffer.height() != size.height
+        }) {
+            surface.framebuffer =
+                Some(tiny_skia::Pixmap::new(size.width, size.height).expect("Create framebuffer"));
+
+            is_stale = true;
+        }
+    } else if surface.framebuffer.take().is_some() {
+        is_stale = true;
+    }
+
+    is_stale
+}
+
+/// Converts a damaged `region` of a render target into the region of the
+/// window it ends up covering once upscaled.
+fn upscaled(region: Rectangle, pixel_scale: u32) -> Rectangle<u32> {
+    let x = region.x.floor().max(0.0) as u32;
+    let y = region.y.floor().max(0.0) as u32;
+
+    Rectangle {
+        x: x * pixel_scale,
+        y: y * pixel_scale,
+        width: ((region.x + region.width).ceil().max(0.0) as u32).saturating_sub(x) * pixel_scale,
+        height: ((region.y + region.height).ceil().max(0.0) as u32).saturating_sub(y) * pixel_scale,
+    }
 }
 
 pub fn screenshot(
@@ -207,27 +290,52 @@ pub fn screenshot(
     viewport: &Viewport,
     background_color: Color,
 ) -> Vec<u8> {
-    let size = viewport.physical_size();
+    let physical_size = viewport.physical_size();
+    let pixel_scale = viewport.pixel_scale();
 
-    let mut offscreen_buffer: Vec<u32> = vec![0; size.width as usize * size.height as usize];
+    let target = viewport.target();
+    let target_size = target.physical_size();
 
-    let mut clip_mask = tiny_skia::Mask::new(size.width, size.height).expect("Create clip mask");
+    let mut framebuffer: Vec<u32> =
+        vec![0; target_size.width as usize * target_size.height as usize];
+
+    let mut clip_mask =
+        tiny_skia::Mask::new(target_size.width, target_size.height).expect("Create clip mask");
 
     renderer.draw(
         &mut tiny_skia::PixmapMut::from_bytes(
-            bytemuck::cast_slice_mut(&mut offscreen_buffer),
-            size.width,
-            size.height,
+            bytemuck::cast_slice_mut(&mut framebuffer),
+            target_size.width,
+            target_size.height,
         )
         .expect("Create offscreen pixel map"),
         &mut clip_mask,
-        viewport,
-        &[Rectangle::with_size(Size::new(
-            size.width as f32,
-            size.height as f32,
-        ))],
+        &target,
+        &[Rectangle::with_size(target.logical_size())],
         background_color,
     );
+
+    let offscreen_buffer = if pixel_scale == 1 {
+        framebuffer
+    } else {
+        let mut screenshot = vec![0; physical_size.width as usize * physical_size.height as usize];
+
+        graphics::pixel_scale::upscale(
+            &framebuffer,
+            target_size,
+            &mut screenshot,
+            physical_size,
+            pixel_scale,
+            Rectangle {
+                x: 0,
+                y: 0,
+                width: physical_size.width,
+                height: physical_size.height,
+            },
+        );
+
+        screenshot
+    };
 
     offscreen_buffer.iter().fold(
         Vec::with_capacity(offscreen_buffer.len() * 4),

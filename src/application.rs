@@ -39,7 +39,8 @@ use crate::theme;
 use crate::widget::text;
 use crate::window;
 use crate::{
-    Backend, Executor, Font, Never, Preset, Result, Settings, Size, Subscription, Task, Theme,
+    Backend, CrtEffectSettings, Executor, Font, Never, PixelScaleMode, Preset, Result, Settings,
+    Size, Subscription, Task, Theme,
 };
 
 #[cfg(feature = "hot")]
@@ -226,6 +227,83 @@ impl<P: Program> Application<P> {
         Self {
             settings: Settings {
                 antialiasing,
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Sets the [`Settings::pixel_scale`] of the [`Application`].
+    ///
+    /// The interface will be laid out and rendered in __virtual pixels__ into
+    /// a low resolution framebuffer, which is then upscaled with
+    /// nearest-neighbor filtering; producing the crisp, chunky look of pixel
+    /// art. Every renderer supports it.
+    ///
+    /// A bare integer is a [`PixelScaleMode::Fixed`] pixel scale:
+    ///
+    /// ```no_run,standalone_crate
+    /// use iced::widget::{column, text, Widget};
+    ///
+    /// pub fn main() -> iced::Result {
+    ///     iced::application(u64::default, update, view).pixel_scale(3).run()
+    /// }
+    ///
+    /// fn update(value: &mut u64, _message: ()) {
+    ///     *value += 1;
+    /// }
+    ///
+    /// fn view(value: &u64) -> impl Widget<()> {
+    ///     column![text(value)]
+    /// }
+    /// ```
+    ///
+    /// A fixed pixel scale ignores the density of the display, though—which
+    /// makes an interface look smaller on a high density one. Prefer
+    /// [`PixelScaleMode::Auto`] to keep its apparent size consistent:
+    ///
+    /// ```no_run,standalone_crate
+    /// use iced::widget::{column, text, Widget};
+    /// use iced::PixelScaleMode;
+    ///
+    /// pub fn main() -> iced::Result {
+    ///     iced::application(u64::default, update, view)
+    ///         .pixel_scale(PixelScaleMode::Auto(3))
+    ///         .run()
+    /// }
+    ///
+    /// fn update(value: &mut u64, _message: ()) {
+    ///     *value += 1;
+    /// }
+    ///
+    /// fn view(value: &u64) -> impl Widget<()> {
+    ///     column![text(value)]
+    /// }
+    /// ```
+    ///
+    /// A pixel scale __replaces__ the scale factor of the display. Notably,
+    /// this means [`Application::scale_factor`] only takes part in deriving it.
+    pub fn pixel_scale(self, pixel_scale: impl Into<PixelScaleMode>) -> Self {
+        Self {
+            settings: Settings {
+                pixel_scale: pixel_scale.into(),
+                ..self.settings
+            },
+            ..self
+        }
+    }
+
+    /// Sets the [`Settings::crt_effects`] of the [`Application`].
+    ///
+    /// CRT effects emulate a retro monitor with scanlines, screen curvature,
+    /// color separation and a vignette. They pair well with a pixel scale, but
+    /// do not require one.
+    ///
+    /// Only supported by the `wgpu` renderer; ignored by any other renderer.
+    pub fn crt_effects(self, crt_effects: CrtEffectSettings) -> Self {
+        Self {
+            settings: Settings {
+                crt_effects: Some(crt_effects),
                 ..self.settings
             },
             ..self

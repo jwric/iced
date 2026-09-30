@@ -33,6 +33,7 @@ mod buffer;
 mod color;
 mod engine;
 mod nudge;
+pub mod pixel_scale;
 mod quad;
 mod text;
 mod triangle;
@@ -385,6 +386,7 @@ impl Renderer {
                     &layer.text,
                     layer.bounds,
                     Transformation::scale(scale_factor),
+                    viewport.pixel_scale() > 1,
                 );
 
                 prepare_span.finish();

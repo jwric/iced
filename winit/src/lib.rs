@@ -139,6 +139,7 @@ where
         is_daemon,
         backend_settings,
         renderer_settings,
+        settings.pixel_scale,
         settings.fonts,
         system_theme_receiver,
     ));
@@ -473,6 +474,7 @@ async fn run_instance<P>(
     is_daemon: bool,
     backend_settings: backend::Settings,
     mut renderer_settings: renderer::Settings,
+    pixel_scale: core::PixelScaleMode,
     default_fonts: Vec<Cow<'static, [u8]>>,
     mut _system_theme: oneshot::Receiver<theme::Mode>,
 ) where
@@ -632,6 +634,7 @@ async fn run_instance<P>(
                     renderer_settings,
                     exit_on_close_request,
                     system_theme,
+                    pixel_scale,
                 );
 
                 window

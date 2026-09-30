@@ -1,10 +1,12 @@
 //! Connect a window with a renderer.
 use crate::core::Color;
+use crate::core::CrtEffectSettings;
 use crate::core::backend;
 use crate::core::renderer;
 use crate::graphics::color;
 use crate::graphics::compositor;
 use crate::graphics::{self, Antialiasing, Shell, Viewport};
+use crate::pixel_scale::PixelScaler;
 use crate::{Engine, Renderer};
 
 /// A window graphics backend for iced powered by `wgpu`.
@@ -15,6 +17,7 @@ pub struct Compositor {
     alpha_mode: wgpu::CompositeAlphaMode,
     engine: Engine,
     settings: Settings,
+    pixel_scaler: PixelScaler,
 }
 
 /// A compositor error.
@@ -201,6 +204,7 @@ impl Compositor {
                         format,
                         alpha_mode,
                         engine,
+                        pixel_scaler: PixelScaler::new(settings.crt_effects),
                         settings,
                     });
                 }
@@ -231,21 +235,42 @@ pub fn present(
     viewport: &Viewport,
     background_color: Color,
     on_pre_present: impl FnOnce(),
+    pixel_scaler: &mut PixelScaler,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
 ) -> Result<(), compositor::SurfaceError> {
     match surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(frame) => {
-            let view = &frame
+            let format = frame.texture.format();
+
+            let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            let _submission = renderer.present(
-                Some(background_color),
-                frame.texture.format(),
-                view,
-                viewport,
-            );
+            if pixel_scaler.is_enabled(viewport) {
+                // Render to a low resolution texture...
+                let target = viewport.target();
 
-            // Present the frame
+                let _submission = renderer.present(
+                    Some(background_color),
+                    format,
+                    pixel_scaler.target(device, format, target.physical_size()),
+                    &target,
+                );
+
+                // ...and upscale it onto the surface
+                pixel_scaler.present(
+                    device,
+                    queue,
+                    format,
+                    &view,
+                    viewport.physical_size(),
+                    viewport.pixel_scale(),
+                );
+            } else {
+                let _submission = renderer.present(Some(background_color), format, &view, viewport);
+            }
+
             on_pre_present();
             frame.present();
 
@@ -259,6 +284,49 @@ pub fn present(
         wgpu::CurrentSurfaceTexture::Lost => Err(compositor::SurfaceError::Lost),
         wgpu::CurrentSurfaceTexture::Validation => Err(compositor::SurfaceError::Other),
     }
+}
+
+/// Screenshots the current primitives of the given [`Renderer`].
+///
+/// The screenshot matches what is shown on screen: when pixel scaling is
+/// enabled, the frame is rendered at [`Viewport::target_size`] and then
+/// upscaled with nearest-neighbor filtering—CRT effects excluded.
+pub fn screenshot(
+    renderer: &mut Renderer,
+    viewport: &Viewport,
+    background_color: Color,
+) -> Vec<u8> {
+    let target = viewport.target();
+    let bytes = renderer.screenshot(&target, background_color);
+
+    let pixel_scale = viewport.pixel_scale();
+
+    if pixel_scale == 1 {
+        return bytes;
+    }
+
+    let physical_size = viewport.physical_size();
+    let target_size = target.physical_size();
+
+    let source: &[[u8; 4]] = bytemuck::cast_slice(&bytes);
+
+    let mut screenshot = vec![[0; 4]; physical_size.width as usize * physical_size.height as usize];
+
+    graphics::pixel_scale::upscale(
+        source,
+        target_size,
+        &mut screenshot,
+        physical_size,
+        pixel_scale,
+        crate::core::Rectangle {
+            x: 0,
+            y: 0,
+            width: physical_size.width,
+            height: physical_size.height,
+        },
+    );
+
+    bytemuck::cast_slice(&screenshot).to_vec()
 }
 
 impl graphics::Compositor for Compositor {
@@ -354,6 +422,9 @@ impl graphics::Compositor for Compositor {
             viewport,
             background_color,
             on_pre_present,
+            &mut self.pixel_scaler,
+            &self.engine.device,
+            &self.engine.queue,
         )
     }
 
@@ -363,7 +434,7 @@ impl graphics::Compositor for Compositor {
         viewport: &Viewport,
         background_color: Color,
     ) -> Vec<u8> {
-        renderer.screenshot(viewport, background_color)
+        screenshot(renderer, viewport, background_color)
     }
 }
 
@@ -387,6 +458,14 @@ pub struct Settings {
     ///
     /// By default, it is `None`.
     pub antialiasing: Option<Antialiasing>,
+
+    /// The CRT post-processing effects of the [`Compositor`].
+    ///
+    /// Configure properties like scanlines, screen curvature, and color
+    /// separation for an authentic retro CRT monitor look.
+    ///
+    /// By default, CRT effects are disabled (`None`).
+    pub crt_effects: Option<CrtEffectSettings>,
 }
 
 impl Default for Settings {
@@ -396,6 +475,7 @@ impl Default for Settings {
             backends: wgpu::Backends::all(),
             power_preference: backend::PowerPreference::None,
             antialiasing: None,
+            crt_effects: None,
         }
     }
 }
@@ -424,6 +504,7 @@ impl From<backend::Settings> for Settings {
             antialiasing: settings.antialiasing.then_some(Antialiasing::MSAAx4),
             backends,
             power_preference: settings.power_preference,
+            crt_effects: settings.crt_effects,
         }
     }
 }

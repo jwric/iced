@@ -1,4 +1,6 @@
 //! Graphical backends are designed to aid in rendering computer graphics to a monitor.
+use crate::CrtEffectSettings;
+
 use std::env;
 use std::fmt;
 
@@ -162,6 +164,13 @@ pub struct Settings {
     ///
     /// By default, it is `true`.
     pub vsync: bool,
+
+    /// The CRT post-processing effects to apply to every frame.
+    ///
+    /// Only supported by the `wgpu` renderer; ignored by any other renderer.
+    ///
+    /// By default, it is `None`.
+    pub crt_effects: Option<CrtEffectSettings>,
 }
 
 impl Default for Settings {
@@ -171,6 +180,7 @@ impl Default for Settings {
             antialiasing: true,
             vsync: true,
             power_preference: PowerPreference::None,
+            crt_effects: None,
         }
     }
 }
@@ -182,6 +192,7 @@ impl From<&crate::Settings> for Settings {
             antialiasing: settings.antialiasing,
             vsync: settings.vsync,
             power_preference: settings.power_preference,
+            crt_effects: settings.crt_effects,
         }
     }
 }
