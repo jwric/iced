@@ -67,7 +67,18 @@ where
         };
 
         let viewport = {
+            #[cfg(not(target_arch = "wasm32"))]
             let physical_size = window.inner_size();
+
+            // Firefox for Android can expose
+            // `devicePixelContentBoxSize` without ever delivering the
+            // corresponding ResizeObserver callback. In that case, winit's
+            // cached inner size remains 0x0 during startup even though the
+            // canvas already fills the page. Seed the viewport directly from
+            // the rendered canvas bounds so the compositor has a valid
+            // surface before the first browser resize event.
+            #[cfg(target_arch = "wasm32")]
+            let physical_size = web_canvas_physical_size(window);
 
             viewport(
                 Size::new(physical_size.width, physical_size.height),
@@ -192,6 +203,29 @@ where
         }
     }
 
+    /// Synchronize a browser window with the canvas's rendered CSS bounds.
+    ///
+    /// Firefox for Android may not emit winit's ResizeObserver event when the
+    /// visual viewport changes for the software keyboard. Polling at the next
+    /// browser input event keeps the compositor surface and UI layout atomic.
+    #[cfg(target_arch = "wasm32")]
+    pub fn synchronize_web_viewport(&mut self, window: &Window) -> bool {
+        let physical_size = web_canvas_physical_size(window);
+
+        if self.viewport.physical_size() == Size::new(physical_size.width, physical_size.height) {
+            return false;
+        }
+
+        self.scale.window = window.scale_factor() as f32;
+        self.viewport = viewport(
+            Size::new(physical_size.width, physical_size.height),
+            self.scale,
+            self.pixel_scale_mode,
+        );
+        self.surface_version += 1;
+        true
+    }
+
     pub fn synchronize(
         &mut self,
         program: &program::Instance<P>,
@@ -280,4 +314,20 @@ fn viewport(size: Size<u32>, scale: renderer::Scale, pixel_scale_mode: PixelScal
     } else {
         Viewport::with_physical_size(size, scale)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_canvas_physical_size(window: &Window) -> winit::dpi::PhysicalSize<u32> {
+    use winit::platform::web::WindowExtWebSys;
+
+    let bounds = window
+        .canvas()
+        .expect("Get window canvas")
+        .get_bounding_client_rect();
+    let scale = window.scale_factor();
+
+    winit::dpi::PhysicalSize::new(
+        (bounds.width() * scale).round().max(1.0) as u32,
+        (bounds.height() * scale).round().max(1.0) as u32,
+    )
 }

@@ -1029,6 +1029,37 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        // Firefox for Android may not surface visual viewport
+                        // changes through winit's canvas ResizeObserver. The
+                        // browser bridge wakes us with an inert keyboard event;
+                        // synchronize the actual rendered canvas bounds before
+                        // processing it so resize, relayout, and presentation
+                        // happen in the same event-loop turn.
+                        #[cfg(target_arch = "wasm32")]
+                        if !matches!(
+                            window_event,
+                            winit::event::WindowEvent::Resized(_)
+                                | winit::event::WindowEvent::ScaleFactorChanged { .. }
+                        ) && window.state.synchronize_web_viewport(&window.raw)
+                        {
+                            window.raw.request_redraw();
+                            events.push((
+                                id,
+                                core::Event::Window(window::Event::Resized(
+                                    window.state.logical_size(),
+                                )),
+                            ));
+                        }
+
+                        // A browser soft-keyboard bridge owns DOM focus while
+                        // the canvas text field remains logically focused.
+                        #[cfg(target_arch = "wasm32")]
+                        if matches!(window_event, winit::event::WindowEvent::Focused(false))
+                            && web_mobile_keyboard_focused()
+                        {
+                            continue;
+                        }
+
                         match window_event {
                             winit::event::WindowEvent::Resized(_)
                             | winit::event::WindowEvent::Occluded(false) => {
@@ -1870,6 +1901,14 @@ where
             ))
         })
         .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_mobile_keyboard_focused() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.active_element())
+        .is_some_and(|element| element.id() == "mobile-keyboard")
 }
 
 /// Returns true if the provided event should cause a [`Program`] to
