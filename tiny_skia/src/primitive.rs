@@ -24,10 +24,27 @@ pub enum Primitive {
 
 impl Primitive {
     /// Returns the visible bounds of the [`Primitive`].
+    ///
+    /// They contain every pixel it touches: a stroke reaches half its width
+    /// past its path (further at a miter or a square cap's corner), and
+    /// anti-aliasing a pixel more.
     pub fn visible_bounds(&self) -> Rectangle {
-        let bounds = match self {
-            Primitive::Fill { path, .. } => path.bounds(),
-            Primitive::Stroke { path, .. } => path.bounds(),
+        let (bounds, reach) = match self {
+            Primitive::Fill { path, .. } => (path.bounds(), 0.0),
+            Primitive::Stroke { path, stroke, .. } => {
+                let join = match stroke.line_join {
+                    tiny_skia::LineJoin::Miter | tiny_skia::LineJoin::MiterClip => {
+                        stroke.miter_limit
+                    }
+                    tiny_skia::LineJoin::Round | tiny_skia::LineJoin::Bevel => 1.0,
+                };
+                let cap = match stroke.line_cap {
+                    tiny_skia::LineCap::Square => std::f32::consts::SQRT_2,
+                    tiny_skia::LineCap::Butt | tiny_skia::LineCap::Round => 1.0,
+                };
+
+                (path.bounds(), stroke.width / 2.0 * join.max(cap))
+            }
         };
 
         Rectangle {
@@ -36,5 +53,6 @@ impl Primitive {
             width: bounds.width(),
             height: bounds.height(),
         }
+        .expand(reach + 1.0)
     }
 }

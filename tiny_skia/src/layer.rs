@@ -459,8 +459,8 @@ mod tests {
     use crate::core::Point;
     use crate::core::text::LineHeight;
     use crate::geometry::Frame;
-    use crate::graphics::geometry;
     use crate::graphics::geometry::frame::Backend;
+    use crate::graphics::geometry::{self, Path, Stroke};
 
     const VIEW: Rectangle = Rectangle {
         x: 0.0,
@@ -530,5 +530,23 @@ mod tests {
         );
         assert!(covers(&regions, Point::new(13.0, 16.0)), "{regions:?}");
         assert!(!covers(&regions, Point::new(13.0, 100.0)), "{regions:?}");
+    }
+
+    #[test]
+    fn a_thick_stroke_damages_its_whole_width() {
+        let before = layer(Vec::new(), Transformation::IDENTITY);
+        let after = layer(
+            vec![frame(|f| {
+                f.stroke(
+                    &Path::line(Point::new(100.0, 100.0), Point::new(200.0, 100.0)),
+                    Stroke::default().with_width(10.0),
+                );
+            })],
+            Transformation::IDENTITY,
+        );
+        let regions = damage(&before, &after);
+
+        assert!(covers(&regions, Point::new(150.0, 96.0)), "{regions:?}");
+        assert!(covers(&regions, Point::new(150.0, 104.0)), "{regions:?}");
     }
 }
