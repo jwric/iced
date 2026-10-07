@@ -203,6 +203,38 @@ impl Layer {
         ));
     }
 
+    /// Draws the primitives, images and text of a canvas [`Geometry`].
+    ///
+    /// [`Geometry`]: crate::Geometry
+    #[cfg(feature = "geometry")]
+    pub fn draw_geometry(&mut self, geometry: crate::Geometry, transformation: Transformation) {
+        match geometry {
+            crate::Geometry::Live {
+                primitives,
+                images,
+                text,
+                clip_bounds,
+            } => {
+                self.draw_primitive_group(primitives, clip_bounds, transformation);
+
+                for image in images {
+                    self.draw_image(image, transformation);
+                }
+
+                self.draw_text_group(text, clip_bounds, transformation);
+            }
+            crate::Geometry::Cache(cache) => {
+                self.draw_primitive_cache(cache.primitives, cache.clip_bounds, transformation);
+
+                for image in cache.images.iter() {
+                    self.draw_image(image.clone(), transformation);
+                }
+
+                self.draw_text_cache(cache.text, cache.clip_bounds, transformation);
+            }
+        }
+    }
+
     pub fn damage(previous: &Self, current: &Self) -> Vec<Rectangle> {
         if previous.bounds != current.bounds {
             return vec![previous.bounds, current.bounds];

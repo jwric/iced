@@ -313,31 +313,7 @@ impl graphics::geometry::Renderer for Renderer {
     fn draw_geometry(&mut self, geometry: Self::Geometry) {
         let (layer, transformation) = self.layers.current_mut();
 
-        match geometry {
-            Geometry::Live {
-                primitives,
-                images,
-                text,
-                clip_bounds,
-            } => {
-                layer.draw_primitive_group(primitives, clip_bounds, transformation);
-
-                for image in images {
-                    layer.draw_image(image, transformation);
-                }
-
-                layer.draw_text_group(text, clip_bounds, transformation);
-            }
-            Geometry::Cache(cache) => {
-                layer.draw_primitive_cache(cache.primitives, cache.clip_bounds, transformation);
-
-                for image in cache.images.iter() {
-                    layer.draw_image(image.clone(), transformation);
-                }
-
-                layer.draw_text_cache(cache.text, cache.clip_bounds, transformation);
-            }
-        }
+        layer.draw_geometry(geometry, transformation);
     }
 }
 
