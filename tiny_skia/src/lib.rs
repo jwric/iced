@@ -133,7 +133,14 @@ impl Renderer {
                             continue;
                         };
 
-                        engine::adjust_clip_mask(clip_mask, group_bounds);
+                        // The mask is the layer's here, and rebuilding it
+                        // clears all of it: only a group clipped tighter
+                        // than the layer needs one of its own.
+                        let clipped = group_bounds != layer_bounds;
+
+                        if clipped {
+                            engine::adjust_clip_mask(clip_mask, group_bounds);
+                        }
 
                         for primitive in group.as_slice() {
                             self.engine.draw_primitive(
@@ -145,7 +152,9 @@ impl Renderer {
                             );
                         }
 
-                        engine::adjust_clip_mask(clip_mask, layer_bounds);
+                        if clipped {
+                            engine::adjust_clip_mask(clip_mask, layer_bounds);
+                        }
                     }
 
                     render_span.finish();
