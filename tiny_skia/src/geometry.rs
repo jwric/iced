@@ -236,7 +236,7 @@ impl geometry::frame::Backend for Frame {
                 shaping: text.shaping,
                 wrapping: text.wrapping,
                 ellipsis: text.ellipsis,
-                clip_bounds: Rectangle::with_size(Size::INFINITE),
+                clip_bounds: self.clip_bounds,
             });
         } else {
             text.draw_with(|path, color| self.fill(&path, color));

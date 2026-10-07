@@ -451,3 +451,84 @@ impl<T> Item<T> {
         }
     }
 }
+
+#[cfg(all(test, feature = "geometry"))]
+mod tests {
+    use super::*;
+    use crate::Geometry;
+    use crate::core::Point;
+    use crate::core::text::LineHeight;
+    use crate::geometry::Frame;
+    use crate::graphics::geometry;
+    use crate::graphics::geometry::frame::Backend;
+
+    const VIEW: Rectangle = Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 300.0,
+    };
+
+    fn frame(draw: impl FnOnce(&mut Frame)) -> Geometry {
+        let mut frame = Frame::new(VIEW);
+        draw(&mut frame);
+        frame.into_geometry()
+    }
+
+    fn layer(geometries: Vec<Geometry>, transformation: Transformation) -> Layer {
+        let mut layer = Layer {
+            bounds: VIEW,
+            ..Layer::default()
+        };
+
+        for geometry in geometries {
+            layer.draw_geometry(geometry, transformation);
+        }
+
+        layer
+    }
+
+    fn text(frame: &mut Frame, content: &str, x: f32, y: f32) {
+        frame.fill_text(geometry::Text {
+            content: content.to_owned(),
+            position: Point::new(x, y),
+            max_width: f32::INFINITY,
+            size: 11.0.into(),
+            line_height: LineHeight::Absolute(12.0.into()),
+            ..geometry::Text::default()
+        });
+    }
+
+    /// The damage between two layers, grouped as the compositor groups it.
+    fn damage(previous: &Layer, current: &Layer) -> Vec<Rectangle> {
+        damage::group(Layer::damage(previous, current), VIEW)
+    }
+
+    fn covers(regions: &[Rectangle], point: Point) -> bool {
+        regions.iter().any(|region| region.contains(point))
+    }
+
+    #[test]
+    fn changed_canvas_text_damages_its_line_not_the_rest_of_the_canvas() {
+        let before = layer(
+            vec![frame(|f| text(f, "A", 10.0, 10.0))],
+            Transformation::IDENTITY,
+        );
+        let after = layer(
+            vec![frame(|f| text(f, "B", 10.0, 10.0))],
+            Transformation::IDENTITY,
+        );
+        let regions = damage(&before, &after);
+
+        assert!(
+            Layer::damage(&before, &after)
+                .iter()
+                .all(|region| region.x.is_finite()
+                    && region.width.is_finite()
+                    && region.height.is_finite()),
+            "{regions:?}"
+        );
+        assert!(covers(&regions, Point::new(13.0, 16.0)), "{regions:?}");
+        assert!(!covers(&regions, Point::new(13.0, 100.0)), "{regions:?}");
+    }
+}

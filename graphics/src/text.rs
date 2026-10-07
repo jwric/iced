@@ -75,7 +75,8 @@ pub enum Text {
 }
 
 impl Text {
-    /// Returns the visible bounds of the [`Text`].
+    /// Returns the visible bounds of the [`Text`], or a region that contains
+    /// them.
     pub fn visible_bounds(&self) -> Option<Rectangle> {
         match self {
             Text::Paragraph {
@@ -97,10 +98,68 @@ impl Text {
                 .intersection(clip_bounds)
                 .map(|bounds| bounds * *transformation),
             Text::Cached {
+                content,
                 bounds,
+                size,
+                line_height,
+                align_x,
+                align_y,
+                wrapping,
                 clip_bounds,
                 ..
-            } => bounds.intersection(clip_bounds),
+            } => {
+                // How far the text reaches is only known once it is shaped,
+                // so these are the bounds of its lines from where it is
+                // anchored, with room for glyphs to overhang them. Text that
+                // does not wrap may run on to the edge of its clip.
+                let wraps = *wrapping != Wrapping::None && bounds.width.is_finite();
+
+                let (left, right) = match (align_x, wraps) {
+                    (Alignment::Center, true) => {
+                        (bounds.x - bounds.width / 2.0, bounds.x + bounds.width / 2.0)
+                    }
+                    (Alignment::Right, true) => (bounds.x - bounds.width, bounds.x),
+                    (_, true) => (bounds.x, bounds.x + bounds.width),
+                    (Alignment::Center, false) => (f32::NEG_INFINITY, f32::INFINITY),
+                    (Alignment::Right, false) => (f32::NEG_INFINITY, bounds.x),
+                    (_, false) => (bounds.x, f32::INFINITY),
+                };
+
+                let height = if wraps {
+                    bounds.height
+                } else {
+                    let breaks = content
+                        .chars()
+                        .filter(|c| {
+                            matches!(c, '\n' | '\r' | '\u{1c}'..='\u{1e}' | '\u{85}' | '\u{2029}')
+                        })
+                        .count();
+
+                    (breaks + 1) as f32 * line_height.0
+                };
+
+                let (top, bottom) = match align_y {
+                    alignment::Vertical::Top => (bounds.y, bounds.y + height),
+                    alignment::Vertical::Center => {
+                        (bounds.y - height / 2.0, bounds.y + height / 2.0)
+                    }
+                    alignment::Vertical::Bottom => (bounds.y - height, bounds.y),
+                };
+
+                // `min` and `max` pass over the NaN edges of an infinite clip.
+                let overhang = size.0;
+                let left = (left - overhang).max(clip_bounds.x);
+                let right = (right + overhang).min(clip_bounds.x + clip_bounds.width);
+                let top = (top - overhang).max(clip_bounds.y);
+                let bottom = (bottom + overhang).min(clip_bounds.y + clip_bounds.height);
+
+                (left < right && top < bottom).then_some(Rectangle {
+                    x: left,
+                    y: top,
+                    width: right - left,
+                    height: bottom - top,
+                })
+            }
             Text::Raw { raw, .. } => Some(raw.clip_bounds),
         }
     }
@@ -421,4 +480,56 @@ pub fn hint_factor(_size: Pixels, _scale_factor: Option<f32>) -> Option<f32> {
 pub trait Renderer {
     /// Draws the given [`Raw`] text.
     fn fill_raw(&mut self, raw: Raw);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text at (100, 50) in a 400 × 300 clip: 10 px type on 12 px lines.
+    fn text(content: &str, align_x: Alignment, align_y: alignment::Vertical) -> Rectangle {
+        Text::Cached {
+            content: content.to_owned(),
+            bounds: Rectangle::new(Point::new(100.0, 50.0), Size::INFINITE),
+            color: Color::WHITE,
+            size: Pixels(10.0),
+            line_height: Pixels(12.0),
+            font: Font::default(),
+            align_x,
+            align_y,
+            shaping: Shaping::Basic,
+            wrapping: Wrapping::default(),
+            ellipsis: Ellipsis::default(),
+            clip_bounds: Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0)),
+        }
+        .visible_bounds()
+        .expect("Text is visible")
+    }
+
+    #[test]
+    fn unbounded_text_is_as_tall_as_its_lines() {
+        let one = text("A", Alignment::Left, alignment::Vertical::Top);
+        let two = text("A\nB", Alignment::Left, alignment::Vertical::Top);
+
+        assert_eq!((one.y, one.y + one.height), (40.0, 72.0));
+        assert_eq!(two.height - one.height, 12.0);
+    }
+
+    #[test]
+    fn unbounded_text_runs_from_its_anchor_to_the_clip() {
+        let left = text("A", Alignment::Left, alignment::Vertical::Top);
+        let center = text("A", Alignment::Center, alignment::Vertical::Top);
+        let right = text("A", Alignment::Right, alignment::Vertical::Top);
+
+        assert_eq!((left.x, left.x + left.width), (90.0, 400.0));
+        assert_eq!((center.x, center.x + center.width), (0.0, 400.0));
+        assert_eq!((right.x, right.x + right.width), (0.0, 110.0));
+    }
+
+    #[test]
+    fn text_aligned_to_its_bottom_rises_from_its_anchor() {
+        let bottom = text("A", Alignment::Left, alignment::Vertical::Bottom);
+
+        assert_eq!((bottom.y, bottom.y + bottom.height), (28.0, 60.0));
+    }
 }
