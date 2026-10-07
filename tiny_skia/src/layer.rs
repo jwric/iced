@@ -267,54 +267,20 @@ impl Layer {
         let text = damage::diff(
             &previous.text,
             &current.text,
-            |item| {
-                item.as_slice()
-                    .iter()
-                    .filter_map(Text::visible_bounds)
-                    .map(|bounds| bounds * item.transformation())
-                    .collect()
-            },
-            |text_a, text_b| {
-                damage::list(
-                    text_a.as_slice(),
-                    text_b.as_slice(),
-                    |text| {
-                        text.visible_bounds()
-                            .into_iter()
-                            .map(|bounds| bounds * text_a.transformation())
-                            .collect()
-                    },
-                    |text_a, text_b| text_a == text_b,
-                )
-            },
+            |item| item.damage(Text::visible_bounds),
+            |item_a, item_b| item_a.diff(item_b, Text::visible_bounds, Text::eq),
         );
 
-        let primitives = damage::list(
+        let primitives = damage::diff(
             &previous.primitives,
             &current.primitives,
-            |item| match item {
-                Item::Live(primitive) => vec![primitive.visible_bounds()],
-                Item::Group(primitives, group_bounds, transformation) => primitives
-                    .as_slice()
-                    .iter()
-                    .map(Primitive::visible_bounds)
-                    .map(|bounds| bounds * *transformation)
-                    .filter_map(|bounds| bounds.intersection(group_bounds))
-                    .collect(),
-                Item::Cached(_primitives, bounds, _transformation) => {
-                    vec![*bounds]
-                }
-            },
-            |primitive_a, primitive_b| match (primitive_a, primitive_b) {
-                (
-                    Item::Cached(cache_a, bounds_a, transformation_a),
-                    Item::Cached(cache_b, bounds_b, transformation_b),
-                ) => {
-                    Arc::ptr_eq(cache_a, cache_b)
-                        && bounds_a == bounds_b
-                        && transformation_a == transformation_b
-                }
-                _ => false,
+            |item| item.damage(|primitive| Some(primitive.visible_bounds())),
+            |item_a, item_b| {
+                item_a.diff(
+                    item_b,
+                    |primitive| Some(primitive.visible_bounds()),
+                    Primitive::eq,
+                )
             },
         );
 
@@ -450,15 +416,65 @@ impl<T> Item<T> {
             Item::Cached(cache, _, _) => cache,
         }
     }
+
+    /// The regions drawing this [`Item`] covers, given the local bounds of
+    /// each of its parts.
+    fn damage(&self, bounds: impl Fn(&T) -> Option<Rectangle>) -> Vec<Rectangle> {
+        let transformation = self.transformation();
+        let clip_bounds = self.clip_bounds();
+
+        self.as_slice()
+            .iter()
+            .filter_map(&bounds)
+            .filter_map(|bounds| (bounds * transformation).intersection(&clip_bounds))
+            .collect()
+    }
+
+    /// The regions that differ between drawing this [`Item`] and `other`:
+    /// the parts that changed, or all of both if they are placed differently.
+    fn diff(
+        &self,
+        other: &Self,
+        bounds: impl Fn(&T) -> Option<Rectangle>,
+        are_equal: impl Fn(&T, &T) -> bool,
+    ) -> Vec<Rectangle> {
+        if self.transformation() != other.transformation()
+            || self.clip_bounds() != other.clip_bounds()
+        {
+            return [self.damage(&bounds), other.damage(&bounds)].concat();
+        }
+
+        if let (Item::Cached(a, _, _), Item::Cached(b, _, _)) = (self, other)
+            && Arc::ptr_eq(a, b)
+        {
+            return Vec::new();
+        }
+
+        let transformation = self.transformation();
+        let clip_bounds = self.clip_bounds();
+
+        damage::list(
+            self.as_slice(),
+            other.as_slice(),
+            |part| {
+                bounds(part)
+                    .and_then(|bounds| (bounds * transformation).intersection(&clip_bounds))
+                    .into_iter()
+                    .collect()
+            },
+            are_equal,
+        )
+    }
 }
 
 #[cfg(all(test, feature = "geometry"))]
 mod tests {
     use super::*;
     use crate::Geometry;
-    use crate::core::Point;
     use crate::core::text::LineHeight;
+    use crate::core::{Point, Size};
     use crate::geometry::Frame;
+    use crate::graphics::cache::{self, Cached};
     use crate::graphics::geometry::frame::Backend;
     use crate::graphics::geometry::{self, Path, Stroke};
 
@@ -475,6 +491,11 @@ mod tests {
         frame.into_geometry()
     }
 
+    /// The same drawing, kept as a cache.
+    fn kept(draw: impl FnOnce(&mut Frame)) -> Geometry {
+        Geometry::load(&frame(draw).cache(cache::Group::unique(), None))
+    }
+
     fn layer(geometries: Vec<Geometry>, transformation: Transformation) -> Layer {
         let mut layer = Layer {
             bounds: VIEW,
@@ -486,6 +507,13 @@ mod tests {
         }
 
         layer
+    }
+
+    fn square(frame: &mut Frame, x: f32, y: f32, size: f32, color: Color) {
+        frame.fill(
+            &Path::rectangle(Point::new(x, y), Size::new(size, size)),
+            color,
+        );
     }
 
     fn text(frame: &mut Frame, content: &str, x: f32, y: f32) {
@@ -502,6 +530,10 @@ mod tests {
     /// The damage between two layers, grouped as the compositor groups it.
     fn damage(previous: &Layer, current: &Layer) -> Vec<Rectangle> {
         damage::group(Layer::damage(previous, current), VIEW)
+    }
+
+    fn area(regions: &[Rectangle]) -> f32 {
+        regions.iter().map(Rectangle::area).sum()
     }
 
     fn covers(regions: &[Rectangle], point: Point) -> bool {
@@ -530,6 +562,61 @@ mod tests {
         );
         assert!(covers(&regions, Point::new(13.0, 16.0)), "{regions:?}");
         assert!(!covers(&regions, Point::new(13.0, 100.0)), "{regions:?}");
+    }
+
+    #[test]
+    fn identical_live_geometry_is_not_damage() {
+        let draw = |f: &mut Frame| square(f, 10.0, 10.0, 20.0, Color::WHITE);
+        let before = layer(vec![frame(draw)], Transformation::IDENTITY);
+        let after = layer(vec![frame(draw)], Transformation::IDENTITY);
+
+        assert_eq!(damage(&before, &after), Vec::<Rectangle>::new());
+    }
+
+    #[test]
+    fn a_changed_primitive_damages_only_itself() {
+        let before = layer(
+            vec![frame(|f| {
+                square(f, 10.0, 10.0, 20.0, Color::WHITE);
+                square(f, 300.0, 200.0, 20.0, Color::WHITE);
+            })],
+            Transformation::IDENTITY,
+        );
+        let after = layer(
+            vec![frame(|f| {
+                square(f, 10.0, 10.0, 20.0, Color::WHITE);
+                square(f, 300.0, 200.0, 20.0, Color::BLACK);
+            })],
+            Transformation::IDENTITY,
+        );
+        let regions = damage(&before, &after);
+
+        assert!(covers(&regions, Point::new(310.0, 210.0)), "{regions:?}");
+        assert!(!covers(&regions, Point::new(20.0, 20.0)), "{regions:?}");
+    }
+
+    #[test]
+    fn a_newly_kept_drawing_damages_what_it_draws_not_the_canvas() {
+        let before = layer(Vec::new(), Transformation::IDENTITY);
+        let after = layer(
+            vec![kept(|f| square(f, 10.0, 10.0, 20.0, Color::WHITE))],
+            Transformation::IDENTITY,
+        );
+        let regions = damage(&before, &after);
+
+        assert!(covers(&regions, Point::new(20.0, 20.0)), "{regions:?}");
+        assert!(area(&regions) <= 24.0 * 24.0, "{regions:?}");
+    }
+
+    #[test]
+    fn text_that_moves_damages_where_it_was_and_where_it_is() {
+        let draw = |f: &mut Frame| text(f, "A", 0.0, 0.0);
+        let before = layer(vec![frame(draw)], Transformation::translate(10.0, 10.0));
+        let after = layer(vec![frame(draw)], Transformation::translate(200.0, 150.0));
+        let regions = damage(&before, &after);
+
+        assert!(covers(&regions, Point::new(13.0, 16.0)), "{regions:?}");
+        assert!(covers(&regions, Point::new(203.0, 156.0)), "{regions:?}");
     }
 
     #[test]
