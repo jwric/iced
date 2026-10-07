@@ -79,6 +79,9 @@ fn align<T>(
 
 /// Groups the given damage regions that are close together inside the given
 /// bounds.
+///
+/// Repainting a region draws everything under it, so regions that cover
+/// most of the bounds between them are repainted as one.
 pub fn group(mut damage: Vec<Rectangle>, bounds: Rectangle) -> Vec<Rectangle> {
     const AREA_THRESHOLD: f32 = 20_000.0;
 
@@ -107,6 +110,12 @@ pub fn group(mut damage: Vec<Rectangle>, bounds: Rectangle) -> Vec<Rectangle> {
         }
 
         output.push(current);
+    }
+
+    if output.iter().map(Rectangle::area).sum::<f32>() * 2.0 >= bounds.area()
+        && let Some(union) = output.iter().copied().reduce(|a, b| a.union(&b))
+    {
+        return vec![union];
     }
 
     output
@@ -143,6 +152,30 @@ mod tests {
     #[test]
     fn a_changed_primitive_damages_where_it_was_and_where_it_is() {
         assert_eq!(damage(&[1.0, 2.0, 3.0], &[1.0, 9.0, 3.0]), [2.0, 9.0]);
+    }
+
+    #[test]
+    fn regions_covering_most_of_the_bounds_are_repainted_as_one() {
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 1000.0));
+        let stripes: Vec<Rectangle> = (0..10)
+            .map(|i| Rectangle::new(Point::new(0.0, i as f32 * 100.0), Size::new(1000.0, 60.0)))
+            .collect();
+
+        assert_eq!(
+            group(stripes, bounds),
+            [Rectangle::new(Point::ORIGIN, Size::new(1000.0, 960.0))]
+        );
+    }
+
+    #[test]
+    fn regions_covering_little_of_the_bounds_stay_apart() {
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 1000.0));
+        let corners = vec![
+            Rectangle::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0)),
+            Rectangle::new(Point::new(900.0, 900.0), Size::new(100.0, 100.0)),
+        ];
+
+        assert_eq!(group(corners.clone(), bounds), corners);
     }
 
     #[test]
