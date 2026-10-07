@@ -609,6 +609,31 @@ mod tests {
     }
 
     #[test]
+    fn inserting_a_drawing_does_not_damage_the_ones_after_it() {
+        // One kept drawing, as a surface keeps it from frame to frame.
+        let first = frame(|f| square(f, 10.0, 10.0, 20.0, Color::WHITE))
+            .cache(cache::Group::unique(), None);
+        let last = |f: &mut Frame| square(f, 300.0, 200.0, 20.0, Color::WHITE);
+        let before = layer(
+            vec![Geometry::load(&first), frame(last)],
+            Transformation::IDENTITY,
+        );
+        let after = layer(
+            vec![
+                Geometry::load(&first),
+                kept(|f| square(f, 150.0, 100.0, 20.0, Color::WHITE)),
+                frame(last),
+            ],
+            Transformation::IDENTITY,
+        );
+        let regions = damage(&before, &after);
+
+        assert!(covers(&regions, Point::new(160.0, 110.0)), "{regions:?}");
+        assert!(!covers(&regions, Point::new(310.0, 210.0)), "{regions:?}");
+        assert!(!covers(&regions, Point::new(20.0, 20.0)), "{regions:?}");
+    }
+
+    #[test]
     fn text_that_moves_damages_where_it_was_and_where_it_is() {
         let draw = |f: &mut Frame| text(f, "A", 0.0, 0.0);
         let before = layer(vec![frame(draw)], Transformation::translate(10.0, 10.0));
